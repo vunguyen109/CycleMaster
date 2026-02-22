@@ -1,0 +1,9 @@
+Nếu anh muốn, tôi có thể:
+
+Nâng cấp thêm module backtest để kiểm tra xác suất thắng
+
+Hoặc thêm module riêng theo phong cách đầu tư chu kỳ như HPG / DCM
+
+Hoặc thiết kế hệ thống tối ưu riêng cho danh mục anh đang giữ (VCB, FPT, HPG)
+
+Anh muốn hệ thống này thiên về ngắn hạn T+ hay swing 2–6 tuần?
