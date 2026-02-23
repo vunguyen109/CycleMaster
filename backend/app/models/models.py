@@ -70,3 +70,9 @@ class Portfolio(Base):
     symbol = Column(String, index=True)
     quantity = Column(Float)
     avg_price = Column(Float)
+
+
+class Watchlist(Base):
+    __tablename__ = 'watchlist'
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, unique=True, index=True)

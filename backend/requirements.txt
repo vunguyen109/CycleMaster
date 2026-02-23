@@ -10,3 +10,5 @@ numpy==2.0.0
 hmmlearn==0.3.2
 scikit-learn==1.5.1
 pytest==8.2.2
+requests==2.32.3
+vnstock==3.4.2

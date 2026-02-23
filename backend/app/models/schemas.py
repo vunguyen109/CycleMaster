@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date as dt_date
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -6,15 +6,20 @@ from typing import List, Optional
 class MarketRegimeOut(BaseModel):
     regime: str
     confidence: float
-    date: Optional[date] = None
+    date: Optional[dt_date] = None
+    prev_regime: Optional[str] = None
+    prev_confidence: Optional[float] = None
+    confidence_change: Optional[float] = None
 
 
 class StockTopOut(BaseModel):
     symbol: str
     regime: str
     score: float
+    last_close: Optional[float] = None
     buy_zone: str
     take_profit: str
+    stop_loss: Optional[str] = None
     risk_reward: float
 
 
@@ -27,7 +32,7 @@ class StockDetailOut(BaseModel):
 
 
 class ScanLatestOut(BaseModel):
-    date: date
+    date: dt_date
     total_scanned: int
     top_symbols: List[str]
     market_regime: str
@@ -47,6 +52,24 @@ class PortfolioItemOut(BaseModel):
     latest_regime: Optional[str] = None
     latest_score: Optional[float] = None
     warning: Optional[str] = None
+    last_close: Optional[float] = None
+    pnl_vnd: Optional[float] = None
+    buy_zone: Optional[str] = None
+    take_profit: Optional[str] = None
+
+
+class PortfolioUpsertIn(BaseModel):
+    symbol: str
+    quantity: float
+    avg_price: float
+
+
+class WatchlistIn(BaseModel):
+    symbol: str
+
+
+class WatchlistOut(BaseModel):
+    symbol: str
 
 
 class BacktestOut(BaseModel):
@@ -56,3 +79,13 @@ class BacktestOut(BaseModel):
     max_drawdown: float
     avg_rr: float
     equity_curve: list
+
+
+class MarketSeriesPoint(BaseModel):
+    date: dt_date
+    close: float
+
+
+class MarketSeriesOut(BaseModel):
+    symbol: str
+    series: List[MarketSeriesPoint]

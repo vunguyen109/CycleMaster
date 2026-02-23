@@ -7,3 +7,283 @@ Hoặc thêm module riêng theo phong cách đầu tư chu kỳ như HPG / DCM
 Hoặc thiết kế hệ thống tối ưu riêng cho danh mục anh đang giữ (VCB, FPT, HPG)
 
 Anh muốn hệ thống này thiên về ngắn hạn T+ hay swing 2–6 tuần?
+
+
+
+Nhận xét so với các file MD
+Phù hợp
+
+Backend structure đúng BACKEND_ARCHITECTURE.md (app/, services/, models/, ml/, pipeline/, scheduler/, utils/).
+Có data_service, feature_service, regime_service, scoring_service, scheduler.
+Indicators đã có: MA20/50/100, RSI, MACD, ADX, ATR, Volume ratio.
+HMM VNINDEX có.
+APScheduler chạy 18:30.
+API chính theo API_SPEC.md có đủ: /market/regime, /stocks/top, /stocks/{symbol}, /scan/latest.
+Khác biệt / thiếu so với spec
+
+DATA_PIPELINE.md
+Thiếu MA slope.
+Thiếu OBV trend.
+Breakout 20-day có dùng trong scoring nhưng không lưu feature.
+FRONTEND_SPEC.md
+Thiếu trang Market Regime (hiện không có).
+Stock Detail thiếu candlestick + volume chart (ECharts).
+Dashboard thiếu:
+Top 5 Accumulation
+Top 5 Breakout
+VNINDEX chart
+DATABASE_SCHEMA.md
+DB có thêm bảng ohlcv, portfolio, watchlist và thêm cột stop_loss, confidence… (ok nhưng không trong spec).
+API_SPEC.md
+Có thêm API ngoài spec: /alerts/*, /portfolio/*, /watchlist/*, /backtest/*, /market/vnindex/series.
+/stocks/top hiện lọc theo watchlist (spec không nói).
+PROJECT_OVERVIEW.md
+Nêu XGBoost nhưng chưa dùng (đang dùng rule-based + HMM).
+
+
+I. Đánh giá tổng thể
+1️⃣ Điểm mạnh
+
+Về cấu trúc hệ thống
+
+Đã có phân tách rõ:
+
+Regime thị trường
+
+Danh mục theo dõi
+
+Danh mục nắm giữ
+
+Có tính toán:
+
+Vùng mua
+
+Chốt lời
+
+Risk:Reward
+
+Lãi/lỗ thực tế
+
+Về logic trading
+
+Áp dụng chu kỳ rõ ràng (Accumulation)
+
+Có điểm số (Score)
+
+Có R:R cố định (2.0)
+
+→ Đây là nền tảng tốt cho hệ thống trading cá nhân.
+
+II. Vấn đề hiện tại (Cần cải thiện)
+1️⃣ Vấn đề về UI/UX
+❌ (1) Thông tin Regime quá “tĩnh”
+
+Hiện tại:
+
+ACCUMULATION
+Độ tin cậy: 50%
+
+Nhưng không có:
+
+So sánh với phiên trước
+
+Không có tín hiệu thay đổi pha
+
+👉 Người dùng không biết:
+
+Thị trường sắp chuyển pha hay đang ổn định
+
+❌ (2) Tất cả cổ phiếu đều “Tích lũy”
+
+Điều này gây:
+
+Mất phân hóa
+
+Không biết mã nào mạnh hơn mã nào
+
+Trading cần:
+
+Phân cấp rõ: Accumulation mạnh / yếu
+
+Hoặc chuẩn bị Breakout
+
+❌ (3) Vùng giá hiển thị khó đọc
+
+Ví dụ:
+
+91,536k-94,064k
+
+Khó hiểu vì:
+
+Có dấu phẩy + chữ k
+
+Không rõ đơn vị
+
+Nên hiển thị:
+
+91.5 – 94.1
+(nghìn đồng)
+❌ (4) Không có Stop Loss
+
+Có:
+
+Buy zone
+
+Take profit
+
+R:R
+
+Nhưng thiếu:
+
+Stop loss cụ thể
+
+Trading cá nhân bắt buộc có SL.
+
+❌ (5) Không có cảnh báo hành động
+
+Ví dụ danh mục nắm giữ:
+
+HPG lỗ -48k
+VCB lỗ -112k
+
+Nhưng:
+
+Không có cảnh báo “gãy MA50”
+
+Không có tín hiệu nên giữ hay bán
+
+Nêu XGBoost nhưng chưa dùng (đang dùng rule-based + HMM).
+
+III. Vấn đề về kết quả tính toán
+1️⃣ Confidence 50% là quá thấp
+
+Nếu HMM trả về 50%:
+
+→ Hệ thống đang không chắc chắn
+
+Nên:
+
+Hiển thị trạng thái “Neutral”
+
+Hoặc không ép label Accumulation
+
+2️⃣ Tất cả R:R = 2.0
+
+Đây là dấu hiệu:
+
+Hệ thống đang dùng công thức cố định
+
+Không phản ánh volatility từng mã
+
+Nên:
+
+TP = breakout target theo ATR
+
+SL = ATR-based dynamic
+
+R:R tự tính theo volatility
+
+3️⃣ Score không đủ phân hóa
+
+Hiện:
+
+MWG 64.1
+
+FPT 64.0
+
+GAS 60.1
+
+Chênh lệch nhỏ → khó chọn
+
+Nên:
+
+Thêm điểm:
+
+Relative Strength vs VNINDEX
+
+Volume momentum
+
+Sector strength
+
+Chuẩn hóa score về 0–100 thực sự
+
+IV. Đề xuất nâng cấp giao diện (Ưu tiên cao)
+1️⃣ Thêm thanh trạng thái thị trường
+
+Ví dụ:
+
+Regime	Trend Strength	Volatility	Breadth
+Accumulation	Weak	Low	48%
+2️⃣ Thêm badge màu theo mức độ mạnh
+
+Xanh đậm → Accumulation mạnh
+
+Xanh nhạt → tích lũy yếu
+
+Cam → phân phối
+
+Đỏ → markdown
+
+3️⃣ Thêm cột:
+
+Stop Loss
+
+% Upside
+
+% Downside
+
+Xếp hạng (Rank)
+
+4️⃣ Thêm biểu đồ mini sparkline trong bảng
+
+Giúp nhìn nhanh:
+
+Nền tích lũy đẹp hay không
+
+V. Đề xuất nâng cấp tính toán (Quan trọng nhất)
+1️⃣ Thêm Relative Strength Score
+
+Công thức:
+
+RS = stock_return_20d - vnindex_return_20d
+
+→ Cổ phiếu mạnh hơn thị trường phải được ưu tiên.
+
+2️⃣ Thêm Volume Accumulation Score
+5 ngày tăng volume dần + giá không tăng mạnh
+
+Điểm cộng cho tích lũy thật.
+
+3️⃣ Dynamic Risk Model
+
+Thay vì R:R = 2 cố định:
+
+SL = Entry - 1.5 * ATR
+TP = Entry + 2.5 * ATR
+4️⃣ Thêm bộ lọc thanh khoản
+
+Loại bỏ:
+
+Avg volume < 1 tỷ/ngày
+VI. Đánh giá mức độ hiện tại
+Hạng mục	Đánh giá
+Kiến trúc	8/10
+UI	6/10
+Scoring logic	6.5/10
+Trading thực chiến	6/10
+Tiềm năng nâng cấp	9/10
+VII. Nếu nâng cấp đúng hướng
+
+Sau khi:
+
+Thêm RS score
+
+Thêm SL động
+
+Thêm cảnh báo phân phối
+
+Thêm phân hóa regime mạnh/yếu
+
+Hệ thống có thể đạt:
+
+8.5–9/10 cho trading cá nhân.

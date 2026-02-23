@@ -9,7 +9,7 @@ def fit_hmm(returns: np.ndarray, n_states: int = 4):
 
 
 def map_states_to_regimes(model: GaussianHMM):
-    means = model.means_.flatten()
+    means = model.means_[:, 0]
     order = np.argsort(means)
     regimes = ['MARKDOWN', 'DISTRIBUTION', 'ACCUMULATION', 'MARKUP']
     mapping = {}

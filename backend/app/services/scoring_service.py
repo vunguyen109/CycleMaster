@@ -10,7 +10,13 @@ def _round_zone(values):
     return f"{values[0]:.2f}-{values[1]:.2f}"
 
 
-def classify_regime(df: pd.DataFrame):
+def classify_regime(
+    df: pd.DataFrame,
+    rs_score: float = 0.0,
+    va_score: float = 0.0,
+    breadth20_pct: float = 100.0,
+    breadth50_pct: float = 100.0
+):
     last = df.iloc[-1]
     close = last['close']
     ma20 = last['ma20']
@@ -31,11 +37,19 @@ def classify_regime(df: pd.DataFrame):
     tight_range = (rolling_15_high - rolling_15_low) / close < 0.06
     volume_contraction = volume_ratio < 0.8
     atr_contract = atr < df['atr'].rolling(20).mean().iloc[-1]
+    adx_weak = adx < 20
+    atr_slope = df['atr'].diff(5).iloc[-1]
 
     markdown = (close < ma50) and (rsi < 40) and (volume_ratio > 1.2)
     distribution = (rsi > 70) and (volume_spike) and (close < rolling_15_high * 0.995)
     markup = breakout and volume_spike and (adx > 25) and (rsi > 60)
-    accumulation = price_above_ma100 and (40 <= rsi <= 55) and volume_contraction and atr_contract and tight_range
+    down_day = last['close'] < last['open']
+    accumulation = price_above_ma100 and (42 <= rsi <= 55) and volume_contraction and atr_contract and tight_range
+    accumulation &= not (rsi < 40 or rsi > 65)
+    accumulation &= not (close < ma50)
+    accumulation &= not (volume_spike and down_day)
+    accumulation &= adx_weak
+    accumulation &= atr_slope <= 0
 
     if markup:
         return 'MARKUP'
@@ -44,8 +58,10 @@ def classify_regime(df: pd.DataFrame):
     if distribution:
         return 'DISTRIBUTION'
     if accumulation:
-        return 'ACCUMULATION'
-    return 'ACCUMULATION'
+        if rs_score > 0 and va_score > 0 and breadth20_pct >= 40 and breadth50_pct >= 30:
+            return 'ACCUMULATION_STRONG'
+        return 'ACCUMULATION_WEAK'
+    return 'ACCUMULATION_WEAK'
 
 
 def volume_momentum_score(df: pd.DataFrame):
@@ -54,6 +70,19 @@ def volume_momentum_score(df: pd.DataFrame):
     trend = df['volume'].rolling(5).mean().iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
     score = (vr - 1.0) * 12 + (trend - 1.0) * 10
     return float(np.clip(score, -10, 15))
+
+
+def volume_accumulation_score(df: pd.DataFrame):
+    if len(df) < 25:
+        return 0.0
+    vol_ma5 = df['volume'].rolling(5).mean().iloc[-1]
+    vol_ma20 = df['volume'].rolling(20).mean().iloc[-1]
+    price_change_5d = abs(df['close'].pct_change(5).iloc[-1])
+    if pd.isna(vol_ma5) or pd.isna(vol_ma20) or pd.isna(price_change_5d):
+        return 0.0
+    vol_trend = vol_ma5 / max(vol_ma20, 1)
+    score = (vol_trend - 1.0) * 10 - price_change_5d * 50
+    return float(np.clip(score, -5, 10))
 
 
 def relative_strength_score(stock_df: pd.DataFrame, vni_df: pd.DataFrame):
@@ -66,14 +95,23 @@ def relative_strength_score(stock_df: pd.DataFrame, vni_df: pd.DataFrame):
 def build_trade_zones(last_close: float, atr: float):
     buy_zone = (last_close - 0.5 * atr, last_close + 0.5 * atr)
     stop_loss = last_close - 1.5 * atr
-    take_profit = last_close + 3.0 * atr
+    take_profit = last_close + 2.5 * atr
     rr = (take_profit - last_close) / max(last_close - stop_loss, 0.01)
     return buy_zone, take_profit, stop_loss, rr
 
 
-def score_stock(session: Session, symbol: str, df: pd.DataFrame, vni_df: pd.DataFrame, market_regime: str):
+def score_stock(
+    session: Session,
+    symbol: str,
+    df: pd.DataFrame,
+    vni_df: pd.DataFrame,
+    market_regime: str,
+    breadth20_pct: float = 100.0,
+    breadth50_pct: float = 100.0
+):
     last = df.iloc[-1]
     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+    avg_value = (df['close'] * df['volume']).rolling(20).mean().iloc[-1]
     if math.isnan(avg_vol) or avg_vol < settings.liquidity_min_avg_volume:
         return {
             'regime': 'LOW_LIQUIDITY',
@@ -84,10 +122,30 @@ def score_stock(session: Session, symbol: str, df: pd.DataFrame, vni_df: pd.Data
             'stop_loss': '',
             'risk_reward': 0.0
         }
+    if math.isnan(avg_value) or avg_value < settings.liquidity_min_avg_value:
+        return {
+            'regime': 'LOW_LIQUIDITY',
+            'confidence': 0.0,
+            'score': 0.0,
+            'buy_zone': '',
+            'tp_zone': '',
+            'stop_loss': '',
+            'risk_reward': 0.0
+        }
 
-    regime = classify_regime(df)
+    rs_score = relative_strength_score(df, vni_df)
+    va_score = volume_accumulation_score(df)
+    regime = classify_regime(
+        df,
+        rs_score=rs_score,
+        va_score=va_score,
+        breadth20_pct=breadth20_pct,
+        breadth50_pct=breadth50_pct
+    )
     base = 50.0
-    if regime == 'ACCUMULATION':
+    if regime == 'ACCUMULATION_STRONG':
+        base = 62.0
+    elif regime == 'ACCUMULATION_WEAK' or regime == 'ACCUMULATION':
         base = 55.0
     elif regime == 'MARKUP':
         base = 65.0
@@ -97,10 +155,11 @@ def score_stock(session: Session, symbol: str, df: pd.DataFrame, vni_df: pd.Data
         base = 40.0
     elif regime == 'MARKDOWN':
         base = 30.0
+    if market_regime == 'NEUTRAL':
+        base -= 5.0
 
     vm_score = volume_momentum_score(df)
-    rs_score = relative_strength_score(df, vni_df)
-    confidence = float(np.clip(base + vm_score + rs_score, 0, 100))
+    confidence = float(np.clip(base + vm_score + rs_score + va_score, 0, 100))
 
     buy_zone, tp, stop, rr = build_trade_zones(float(last['close']), float(last['atr']))
     return {
