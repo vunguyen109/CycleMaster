@@ -29,6 +29,8 @@ const badgeClass = computed(() => {
       return 'bg-slate-200 text-slate-600'
     case 'NO_DATA':
       return 'bg-slate-100 text-slate-500'
+    case 'LOW_LIQUIDITY':
+      return 'bg-slate-100 text-slate-500'
     default:
       return 'bg-slate-200 text-slate-700'
   }
@@ -37,11 +39,9 @@ const badgeClass = computed(() => {
 const displayText = computed(() => {
   switch (props.regime) {
     case 'ACCUMULATION':
-      return 'Tích lũy'
     case 'ACCUMULATION_STRONG':
-      return 'Tích lũy mạnh'
     case 'ACCUMULATION_WEAK':
-      return 'Tích lũy yếu'
+      return 'Tích lũy'
     case 'MARKUP':
       return 'Đẩy giá'
     case 'DISTRIBUTION':
@@ -52,6 +52,8 @@ const displayText = computed(() => {
       return 'Trung lập'
     case 'NO_DATA':
       return 'Chưa quét'
+    case 'LOW_LIQUIDITY':
+      return 'Thanh khoản thấp'
     default:
       return props.regime
   }

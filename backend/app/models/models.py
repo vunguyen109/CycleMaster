@@ -44,6 +44,15 @@ class StockFeatures(Base):
     ma20 = Column(Float)
     ma50 = Column(Float)
     ma100 = Column(Float)
+    avg_volume_20 = Column(Float)
+    avg_value_20 = Column(Float)
+    liquidity_score = Column(Float)
+    liquidity_percentile_rank = Column(Float)
+    rs_score = Column(Float)
+    sector_return_20d = Column(Float)
+    sector_rs_vs_index = Column(Float)
+    sector_volume_momentum = Column(Float)
+    sector_breadth_pct = Column(Float)
     stock = relationship('Stock')
     __table_args__ = (UniqueConstraint('stock_id', 'date', name='uix_features_stock_date'),)
 
@@ -60,6 +69,10 @@ class StockScore(Base):
     stop_loss = Column(String)
     risk_reward = Column(Float)
     confidence = Column(Float)
+    setup_status = Column(String)
+    market_alignment = Column(String)
+    model_version = Column(String)
+    setup_tier = Column(String)
     stock = relationship('Stock')
     __table_args__ = (UniqueConstraint('stock_id', 'date', name='uix_scores_stock_date'),)
 
@@ -70,9 +83,3 @@ class Portfolio(Base):
     symbol = Column(String, index=True)
     quantity = Column(Float)
     avg_price = Column(Float)
-
-
-class Watchlist(Base):
-    __tablename__ = 'watchlist'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, unique=True, index=True)

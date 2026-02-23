@@ -16,11 +16,11 @@
         <polygon points="710,230 700,210 690,230" fill="#ef4444" />
         <text x="80" y="210" font-size="20" fill="#0f172a">Tích lũy</text>
         <text x="80" y="235" font-size="16" fill="#64748b">(Accumulation)</text>
-        <text x="320" y="140" font-size="20" fill="#0f172a">Tăng giá</text>
+        <text x="320" y="140" font-size="20" fill="#0f172a">Đẩy giá</text>
         <text x="320" y="165" font-size="16" fill="#64748b">(Mark-Up)</text>
         <text x="520" y="35" font-size="20" fill="#0f172a">Phân phối</text>
         <text x="520" y="60" font-size="16" fill="#64748b">(Distribution)</text>
-        <text x="700" y="150" font-size="20" fill="#0f172a">Đi xuống</text>
+        <text x="700" y="150" font-size="20" fill="#0f172a">Đè giá</text>
         <text x="700" y="175" font-size="16" fill="#64748b">(Decline)</text>
       </svg>
     </div>

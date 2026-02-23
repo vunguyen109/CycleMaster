@@ -9,6 +9,11 @@
           <div class="text-xl font-semibold">{{ detail.symbol }}</div>
           <RegimeBadge :regime="detail.regime" />
         </div>
+        <div class="flex flex-wrap gap-2 mt-3">
+          <LiquidityBadge :score="detail.features.liquidity_score" />
+          <SetupStatusBadge :status="detail.suggested_trade.setup_status" />
+          <MarketAlignmentBadge :alignment="detail.suggested_trade.market_alignment" />
+        </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-sm">
           <div>RSI: {{ detail.features.rsi.toFixed(1) }}</div>
           <div>MACD: {{ detail.features.macd.toFixed(2) }}</div>
@@ -26,7 +31,8 @@
           <div>Vùng mua: {{ formatZone(detail.suggested_trade.buy_zone) }}</div>
           <div>Chốt lời: {{ formatMoney(detail.suggested_trade.take_profit) }}</div>
           <div>Cắt lỗ: {{ formatMoney(detail.suggested_trade.stop_loss) }}</div>
-          <div>R:R: {{ detail.suggested_trade.risk_reward.toFixed(2) }}</div>
+          <div>R:R: {{ formatRisk(detail.suggested_trade.risk_reward) }}</div>
+          <div>Tier: {{ detail.suggested_trade.setup_tier || '-' }}</div>
         </div>
       </div>
     </div>
@@ -40,6 +46,9 @@ import { fetchStockDetail } from '../services/api'
 import LoadingState from '../components/LoadingState.vue'
 import ErrorBanner from '../components/ErrorBanner.vue'
 import RegimeBadge from '../components/RegimeBadge.vue'
+import LiquidityBadge from '../components/LiquidityBadge.vue'
+import SetupStatusBadge from '../components/SetupStatusBadge.vue'
+import MarketAlignmentBadge from '../components/MarketAlignmentBadge.vue'
 
 const route = useRoute()
 const symbol = route.params.symbol
@@ -64,6 +73,11 @@ const formatZone = (zone) => {
   const left = (a / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   const right = (b / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   return `${left} - ${right}`
+}
+
+const formatRisk = (value) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  return Number(value).toFixed(2)
 }
 
 onMounted(async () => {

@@ -31,6 +31,9 @@ frontend/
 - Top 5 Breakout
 - Warning (Distribution / Markdown)
 - VNINDEX chart
+- Liquidity badge (High/Medium/Low)
+- Setup status badge (Valid/Weak/Invalid/Low Liquidity)
+- Market alignment indicator
 
 ---
 
@@ -42,3 +45,7 @@ frontend/
 - Confidence score
 - Suggested Buy → TP
 - RiskReward
+- Liquidity badge
+- Setup status badge
+- Market alignment indicator
+- Setup tier (A/B/C)

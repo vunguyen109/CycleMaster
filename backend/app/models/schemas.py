@@ -17,10 +17,14 @@ class StockTopOut(BaseModel):
     regime: str
     score: float
     last_close: Optional[float] = None
-    buy_zone: str
-    take_profit: str
+    buy_zone: Optional[str] = None
+    take_profit: Optional[str] = None
     stop_loss: Optional[str] = None
-    risk_reward: float
+    risk_reward: Optional[float] = None
+    liquidity_score: Optional[float] = None
+    setup_status: Optional[str] = None
+    market_alignment: Optional[str] = None
+    setup_tier: Optional[str] = None
 
 
 class StockDetailOut(BaseModel):
@@ -62,14 +66,6 @@ class PortfolioUpsertIn(BaseModel):
     symbol: str
     quantity: float
     avg_price: float
-
-
-class WatchlistIn(BaseModel):
-    symbol: str
-
-
-class WatchlistOut(BaseModel):
-    symbol: str
 
 
 class BacktestOut(BaseModel):

@@ -1,13 +1,15 @@
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import text, bindparam
+import numpy as np
 from app.models.db import SessionLocal
 from app.models import models
-from app.models.schemas import MarketRegimeOut, StockTopOut, StockDetailOut, ScanLatestOut, AlertOut, PortfolioItemOut, BacktestOut, MarketSeriesOut, MarketSeriesPoint, PortfolioUpsertIn, WatchlistIn, WatchlistOut
+from app.models.schemas import MarketRegimeOut, StockTopOut, StockDetailOut, ScanLatestOut, AlertOut, PortfolioItemOut, BacktestOut, MarketSeriesOut, MarketSeriesPoint, PortfolioUpsertIn
 from app.pipeline.scan_pipeline import run_daily_scan
 from app.services.alert_service import get_distribution_alerts
 from app.services.portfolio_service import get_portfolio
 from app.services import data_service
 from app.backtest_engine import run_backtest
+from app.utils.config import settings
 
 
 router = APIRouter()
@@ -55,85 +57,69 @@ def top_stocks():
     ensure_latest_data()
     session = get_session()
     try:
-        watchlist = [w.symbol for w in session.query(models.Watchlist).all()]
-        if not watchlist:
+        rows = session.execute(
+            text(
+                """
+                SELECT s.symbol, s.sector, sc.score, sc.regime, sc.buy_zone, sc.tp_zone, sc.stop_loss,
+                       sc.risk_reward, sc.setup_status, sc.market_alignment, sc.setup_tier
+                FROM stock_scores sc
+                JOIN stocks s ON s.id = sc.stock_id
+                WHERE sc.date = (SELECT MAX(date) FROM stock_scores)
+                  AND sc.setup_status != 'LOW_LIQUIDITY'
+                  AND sc.regime IN ('ACCUMULATION_STRONG', 'ACCUMULATION_WEAK', 'ACCUMULATION', 'MARKUP')
+                ORDER BY sc.score DESC
+                """
+            )
+        ).fetchall()
+
+        if not rows:
             return []
+
+        scores = [r[2] for r in rows if r[2] is not None]
+        if not scores:
+            return []
+        threshold = float(np.quantile(scores, settings.top_percentile))
+
+        candidates = [r for r in rows if r[2] is not None and r[2] >= threshold]
+        candidates.sort(key=lambda r: r[2], reverse=True)
+
+        sector_counts = {}
         results = []
-        for symbol in watchlist:
-            stock = session.query(models.Stock).filter_by(symbol=symbol).first()
-            score = None
-            last_close = None
-            if stock:
-                score = session.query(models.StockScore).filter_by(stock_id=stock.id).order_by(models.StockScore.date.desc()).first()
-                ohlcv = session.query(models.OHLCV).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).first()
-                if ohlcv:
-                    last_close = float(ohlcv.close)
-            if score:
-                results.append(StockTopOut(
-                    symbol=symbol,
-                    regime=score.regime,
-                    score=float(score.score),
-                    last_close=last_close,
-                    buy_zone=score.buy_zone,
-                    take_profit=score.tp_zone,
-                    stop_loss=score.stop_loss,
-                    risk_reward=float(score.risk_reward)
-                ))
-            else:
-                results.append(StockTopOut(
-                    symbol=symbol,
-                    regime='NO_DATA',
-                    score=0.0,
-                    last_close=last_close,
-                    buy_zone='-',
-                    take_profit='-',
-                    stop_loss='-',
-                    risk_reward=0.0
-                ))
-        results.sort(key=lambda x: x.score, reverse=True)
+        window = max(settings.top_sector_window, settings.top_n)
+        for r in candidates:
+            symbol, sector, score, regime, buy_zone, tp_zone, stop_loss, rr, setup_status, market_alignment, setup_tier = r
+            sector_key = sector or 'UNKNOWN'
+            if len(results) < window:
+                if sector_counts.get(sector_key, 0) >= settings.top_sector_cap:
+                    continue
+            feature = session.query(models.StockFeatures).filter_by(
+                stock_id=session.query(models.Stock.id).filter_by(symbol=symbol).scalar()
+            ).order_by(models.StockFeatures.date.desc()).first()
+            ohlcv = session.query(models.OHLCV).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).first()
+            last_close = float(ohlcv.close) if ohlcv else None
+            results.append(StockTopOut(
+                symbol=symbol,
+                regime=regime,
+                score=float(score),
+                last_close=last_close,
+                buy_zone=buy_zone,
+                take_profit=tp_zone,
+                stop_loss=stop_loss,
+                risk_reward=float(rr) if rr is not None else None,
+                liquidity_score=float(feature.liquidity_score) if feature and feature.liquidity_score is not None else None,
+                setup_status=setup_status,
+                market_alignment=market_alignment,
+                setup_tier=setup_tier
+            ))
+            sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
+            if len(results) >= settings.top_n:
+                break
+
         return results
     finally:
         session.close()
 
 
-@router.get('/watchlist', response_model=list[WatchlistOut])
-def get_watchlist():
-    session = get_session()
-    try:
-        items = session.query(models.Watchlist).order_by(models.Watchlist.symbol.asc()).all()
-        return [WatchlistOut(symbol=i.symbol) for i in items]
-    finally:
-        session.close()
-
-
-@router.post('/watchlist', response_model=WatchlistOut)
-def add_watchlist(payload: WatchlistIn):
-    session = get_session()
-    try:
-        symbol = payload.symbol.strip().upper()
-        exists = session.query(models.Watchlist).filter_by(symbol=symbol).first()
-        if exists:
-            return WatchlistOut(symbol=exists.symbol)
-        item = models.Watchlist(symbol=symbol)
-        session.add(item)
-        session.commit()
-        return WatchlistOut(symbol=item.symbol)
-    finally:
-        session.close()
-
-
-@router.delete('/watchlist/{symbol}')
-def delete_watchlist(symbol: str):
-    session = get_session()
-    try:
-        item = session.query(models.Watchlist).filter_by(symbol=symbol.upper()).first()
-        if not item:
-            raise HTTPException(status_code=404, detail='Symbol not found in watchlist')
-        session.delete(item)
-        session.commit()
-        return {'status': 'deleted', 'symbol': symbol.upper()}
-    finally:
-        session.close()
 
 
 @router.get('/stocks/{symbol}', response_model=StockDetailOut)
@@ -158,7 +144,16 @@ def stock_detail(symbol: str):
                 'atr': feature.atr,
                 'ma20': feature.ma20,
                 'ma50': feature.ma50,
-                'ma100': feature.ma100
+                'ma100': feature.ma100,
+                'avg_volume_20': feature.avg_volume_20,
+                'avg_value_20': feature.avg_value_20,
+                'liquidity_score': feature.liquidity_score,
+                'liquidity_percentile_rank': feature.liquidity_percentile_rank,
+                'rs_score': feature.rs_score,
+                'sector_return_20d': feature.sector_return_20d,
+                'sector_rs_vs_index': feature.sector_rs_vs_index,
+                'sector_volume_momentum': feature.sector_volume_momentum,
+                'sector_breadth_pct': feature.sector_breadth_pct
             },
             regime=score.regime,
             score=score.score,
@@ -167,7 +162,10 @@ def stock_detail(symbol: str):
                 'take_profit': score.tp_zone,
                 'stop_loss': score.stop_loss,
                 'risk_reward': score.risk_reward,
-                'confidence': score.confidence
+                'confidence': score.confidence,
+                'setup_status': score.setup_status,
+                'market_alignment': score.market_alignment,
+                'setup_tier': score.setup_tier
             }
         )
     finally:

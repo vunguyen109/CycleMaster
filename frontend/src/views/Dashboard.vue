@@ -7,7 +7,7 @@
     </div>
 
     <section>
-      <h2 class="text-lg font-semibold mb-2">Danh mục theo dõi</h2>
+      <h2 class="text-lg font-semibold mb-2">Top tiềm năng</h2>
       <LoadingState v-if="loading" />
       <ErrorBanner v-else-if="error" :message="error" />
       <StockTable v-else :rows="topStocks" />
@@ -124,7 +124,7 @@ const regimeHint = computed(() => {
   const parts = [`tính đến ${marketRegime.value.date}`]
   if (marketRegime.value.prev_regime) {
     const diff = marketRegime.value.confidence_change
-    const diffText = diff === null || diff === undefined ? '' : `, Δ${diff.toFixed(1)}%`
+    const diffText = diff === null || diff === undefined ? '' : `, ${diff.toFixed(1)}%`
     const map = {
       ACCUMULATION: 'Tích lũy',
       ACCUMULATION_STRONG: 'Tích lũy mạnh',
@@ -163,7 +163,7 @@ const translateWarning = (message) => {
 const portfolioWarning = computed(() => {
   const warnings = portfolio.value.map(p => p.warning).filter(Boolean)
   if (!warnings.length) return ''
-  return warnings.map(translateWarning).join(' • ')
+  return warnings.map(translateWarning).join('  ')
 })
 
 const formatNumber = (value) => {
@@ -246,17 +246,17 @@ const removePortfolio = async (symbol) => {
 
 onMounted(async () => {
   try {
-    const [regimeRes, topRes, scanRes, alertRes, portfolioRes, vnindexRes] = await Promise.all([
+    const scanRes = await fetchScanLatest()
+    scanLatest.value = scanRes.data
+    const [regimeRes, topRes, alertRes, portfolioRes, vnindexRes] = await Promise.all([
       fetchMarketRegime(),
       fetchTopStocks(),
-      fetchScanLatest(),
       fetchAlerts(),
       fetchPortfolio(),
       fetchVnindexSeries()
     ])
     marketRegime.value = regimeRes.data
     topStocks.value = topRes.data
-    scanLatest.value = scanRes.data
     alerts.value = alertRes.data
     portfolio.value = portfolioRes.data
     vnindexSeries.value = vnindexRes.data.series

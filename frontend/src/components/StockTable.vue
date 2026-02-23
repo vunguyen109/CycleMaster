@@ -12,6 +12,10 @@
           <th class="text-left p-3">Cắt lỗ (nghìn đ)</th>
           <th class="text-left p-3">% Upside</th>
           <th class="text-left p-3">% Downside</th>
+          <th class="text-left p-3">Thanh khoản</th>
+          <th class="text-left p-3">Trạng thái</th>
+          <th class="text-left p-3">Đồng phối</th>
+          <th class="text-left p-3">Tier</th>
           <th class="text-left p-3">Xếp hạng</th>
           <th class="text-left p-3">R:R</th>
         </tr>
@@ -29,8 +33,12 @@
           <td class="p-3">{{ formatMoney(row.stop_loss) }}</td>
           <td class="p-3">{{ formatPercent(getUpside(row)) }}</td>
           <td class="p-3">{{ formatPercent(getDownside(row)) }}</td>
+          <td class="p-3"><LiquidityBadge :score="row.liquidity_score" /></td>
+          <td class="p-3"><SetupStatusBadge :status="row.setup_status" /></td>
+          <td class="p-3"><MarketAlignmentBadge :alignment="row.market_alignment" /></td>
+          <td class="p-3">{{ row.setup_tier || '-' }}</td>
           <td class="p-3">{{ idx + 1 }}</td>
-          <td class="p-3">{{ row.risk_reward.toFixed(2) }}</td>
+          <td class="p-3">{{ formatRisk(row.risk_reward) }}</td>
         </tr>
       </tbody>
     </table>
@@ -39,6 +47,9 @@
 
 <script setup>
 import RegimeBadge from './RegimeBadge.vue'
+import LiquidityBadge from './LiquidityBadge.vue'
+import SetupStatusBadge from './SetupStatusBadge.vue'
+import MarketAlignmentBadge from './MarketAlignmentBadge.vue'
 
 defineProps({
   rows: { type: Array, default: () => [] }
@@ -90,5 +101,10 @@ const getDownside = (row) => {
 const formatPercent = (value) => {
   if (value === null || value === undefined || Number.isNaN(value)) return '-'
   return `${value.toFixed(1)}%`
+}
+
+const formatRisk = (value) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  return Number(value).toFixed(2)
 }
 </script>

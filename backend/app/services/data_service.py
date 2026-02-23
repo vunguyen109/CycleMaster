@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List
 from datetime import datetime, timedelta
 import os
+import time
 import numpy as np
 import pandas as pd
 import requests
@@ -54,7 +55,9 @@ class MockDataProvider(BaseProvider):
         if self.seed_file.exists():
             df = pd.read_csv(self.seed_file, parse_dates=['date'])
         else:
-            frames = [self._generate_mock_series(sym) for sym in symbols]
+            lookback = max(settings.lookback_min, 150)
+            days = max(250, lookback * 2)
+            frames = [self._generate_mock_series(sym, days=days) for sym in symbols]
             df = pd.concat(frames, ignore_index=True)
             df.to_csv(self.seed_file, index=False)
         return df
@@ -63,7 +66,9 @@ class MockDataProvider(BaseProvider):
         if self.vnindex_file.exists():
             df = pd.read_csv(self.vnindex_file, parse_dates=['date'])
         else:
-            df = self._generate_mock_series('VNINDEX')
+            lookback = max(settings.lookback_min, 150)
+            days = max(250, lookback * 2)
+            df = self._generate_mock_series('VNINDEX', days=days)
             df.to_csv(self.vnindex_file, index=False)
         return df
 
@@ -101,10 +106,22 @@ class VnstockProvider(BaseProvider):
 
     def fetch_ohlcv(self, symbols: List[str]) -> pd.DataFrame:
         frames = []
-        for sym in symbols:
-            df = self._history(sym)
-            if not df.empty:
-                frames.append(df)
+        batch_size = max(int(settings.vnstock_batch_size), 1)
+        sleep_seconds = max(int(settings.vnstock_sleep_seconds), 0)
+        total = len(symbols)
+        for i in range(0, total, batch_size):
+            batch = symbols[i:i + batch_size]
+            for sym in batch:
+                try:
+                    df = self._history(sym)
+                except Exception as exc:
+                    logger.warning(f"Vnstock fetch failed for {sym}: {exc}")
+                    df = pd.DataFrame()
+                if not df.empty:
+                    frames.append(df)
+            if i + batch_size < total and sleep_seconds > 0:
+                logger.info(f'Vnstock rate limit guard: sleeping {sleep_seconds}s after {i + len(batch)} symbols')
+                time.sleep(sleep_seconds)
         if not frames:
             return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume', 'symbol'])
         return pd.concat(frames, ignore_index=True)
@@ -133,8 +150,10 @@ class SsiProvider(BaseProvider):
 
     def fetch_ohlcv(self, symbols: List[str]) -> pd.DataFrame:
         frames = []
+        lookback = max(settings.lookback_min, 150)
+        days = max(365, lookback * 2)
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        start_date = end_date - timedelta(days=days)
         from_date = start_date.strftime('%d/%m/%Y')
         to_date = end_date.strftime('%d/%m/%Y')
         for symbol in symbols:
@@ -193,8 +212,10 @@ class FireAntProvider(BaseProvider):
 
     def fetch_ohlcv(self, symbols: List[str]) -> pd.DataFrame:
         frames = []
+        lookback = max(settings.lookback_min, 150)
+        days = max(365, lookback * 2)
         end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         for symbol in symbols:
             url = f"{self.base_url}/symbols/{symbol.upper()}/historical-quotes"
             params = {
@@ -257,18 +278,69 @@ def get_providers() -> List[BaseProvider]:
 
 
 def get_symbols(session: Session):
-    watchlist = [p.symbol for p in session.query(models.Watchlist).all()]
-    if watchlist:
+    universe = load_universe_symbols()
+    symbols = sorted(set(universe)) if universe else []
+    if symbols:
         existing = {s.symbol for s in session.query(models.Stock).all()}
-        to_add = [sym for sym in watchlist if sym not in existing]
+        to_add = [sym for sym in symbols if sym not in existing]
         for sym in to_add:
             session.add(models.Stock(symbol=sym, sector=''))
         if to_add:
             session.commit()
-        return watchlist
+        sync_sector_map(session)
+        return symbols
 
     symbols = [s.symbol for s in session.query(models.Stock).all()]
+    sync_sector_map(session)
     return symbols
+
+
+def load_universe_symbols() -> List[str]:
+    files = [p.strip() for p in settings.universe_files.split(',') if p.strip()]
+    symbols = []
+    for file_path in files:
+        path = Path(file_path)
+        if not path.exists():
+            logger.warning(f'Universe file missing: {file_path}')
+            continue
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception as exc:
+            logger.warning(f'Universe file read failed {file_path}: {exc}')
+            continue
+        for line in text.splitlines():
+            line = line.strip().upper()
+            if not line or line.startswith('#'):
+                continue
+            symbols.append(line)
+    unique = sorted(set(symbols))
+    if not unique:
+        logger.warning('Universe empty after loading files')
+    return unique
+
+
+def sync_sector_map(session: Session):
+    path = Path(settings.sector_map_file)
+    if not path.exists():
+        logger.warning(f'Sector map missing: {settings.sector_map_file}')
+        return
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        logger.warning(f'Sector map read failed: {exc}')
+        return
+    if df.empty or 'symbol' not in df.columns or 'sector' not in df.columns:
+        logger.warning('Sector map missing required columns: symbol, sector')
+        return
+    df['symbol'] = df['symbol'].str.upper().str.strip()
+    df['sector'] = df['sector'].astype(str).str.strip()
+    for _, row in df.iterrows():
+        if not row['symbol'] or not row['sector']:
+            continue
+        stock = session.query(models.Stock).filter_by(symbol=row['symbol']).first()
+        if stock and stock.sector != row['sector']:
+            stock.sector = row['sector']
+    session.commit()
 
 
 def store_ohlcv(session: Session, df: pd.DataFrame):
@@ -307,7 +379,18 @@ def fetch_ohlcv(session: Session, symbols):
             logger.warning(f'Provider {provider.__class__.__name__} returned no data')
             continue
         got = set(df['symbol'].unique()) if 'symbol' in df.columns else set()
-        remaining -= got
+        lookback = max(settings.lookback_min, 150)
+        insufficient = set()
+        if 'symbol' in df.columns:
+            counts = df.groupby('symbol').size().to_dict()
+            for sym, cnt in counts.items():
+                if cnt < lookback:
+                    insufficient.add(sym)
+            if insufficient:
+                logger.warning(
+                    f'Provider {provider.__class__.__name__} insufficient history (<{lookback}) for: {", ".join(sorted(insufficient))}'
+                )
+        remaining -= (got - insufficient)
         logger.info(f'Provider {provider.__class__.__name__} returned {len(df)} rows for {len(got)} symbols')
         frames.append(df)
     if remaining:
@@ -323,6 +406,13 @@ def fetch_vnindex(session: Session):
     for provider in get_providers():
         df = provider.fetch_vnindex()
         if df is None or df.empty:
+            continue
+        lookback = max(settings.lookback_min, 150)
+        if len(df) < lookback:
+            logger.warning(
+                f'Provider {provider.__class__.__name__} VNINDEX insufficient history: {len(df)} rows, need >= {lookback}'
+            )
+            store_ohlcv(session, df)
             continue
         store_ohlcv(session, df)
         return df
