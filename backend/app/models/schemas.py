@@ -17,9 +17,9 @@ class StockTopOut(BaseModel):
     regime: str
     score: float
     last_close: Optional[float] = None
-    buy_zone: Optional[str] = None
-    take_profit: Optional[str] = None
-    stop_loss: Optional[str] = None
+    buy_zone: Optional[float] = None
+    take_profit: Optional[float] = None
+    stop_loss: Optional[float] = None
     risk_reward: Optional[float] = None
     liquidity_score: Optional[float] = None
     setup_status: Optional[str] = None
@@ -58,8 +58,8 @@ class PortfolioItemOut(BaseModel):
     warning: Optional[str] = None
     last_close: Optional[float] = None
     pnl_vnd: Optional[float] = None
-    buy_zone: Optional[str] = None
-    take_profit: Optional[str] = None
+    buy_zone: Optional[float] = None
+    take_profit: Optional[float] = None
 
 
 class PortfolioUpsertIn(BaseModel):

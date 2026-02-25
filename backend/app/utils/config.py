@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     weight_rs: float = 0.2
     weight_liquidity: float = 0.12
     weight_sector: float = 0.18
+    # Cycle-aware scoring weights and tuning
+    weight_cycle: float = 0.0
+    cycle_boost: float = 0.10
+    cycle_mid_penalty_threshold: float = 0.2
+    cycle_mid_penalty: float = 0.25
+    # Backtest / execution tuning
+    trade_cost_pct: float = 0.0
+    slippage_pct: float = 0.0
+    cycle_buy_threshold: float = 0.25
+    cycle_sell_threshold: float = 0.75
+    cycle_amplitude_min: float = 1e-6
     log_level: str = 'INFO'
     portfolio_symbols: str = ''
     portfolio_quantities: str = ''

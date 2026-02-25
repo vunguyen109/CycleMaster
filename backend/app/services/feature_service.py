@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from app.utils import indicators
 from app.services import liquidity_service
 from app.models import models
+from app.services import cycle_service
+from app.utils.config import settings
 
 
 def calculate_features(df: pd.DataFrame, lookback: int | None = None) -> pd.DataFrame:
@@ -28,6 +30,22 @@ def calculate_features(df: pd.DataFrame, lookback: int | None = None) -> pd.Data
     df['sector_rs_vs_index'] = float('nan')
     df['sector_volume_momentum'] = float('nan')
     df['sector_breadth_pct'] = float('nan')
+    # Compute cycle features only for the most recent point (uses only past data)
+    try:
+        window = max(int(getattr(settings, 'lookback_min', 150)), 120)
+        cycle = cycle_service.compute_cycle_for_series(df['close'], window=window)
+        df['cycle_phase'] = float('nan')
+        df['cycle_amplitude'] = float('nan')
+        df['dominant_cycle_period'] = float('nan')
+        if cycle:
+            df.at[df.index[-1], 'cycle_phase'] = cycle.get('cycle_phase')
+            df.at[df.index[-1], 'cycle_amplitude'] = cycle.get('cycle_amplitude')
+            df.at[df.index[-1], 'dominant_cycle_period'] = cycle.get('dominant_period')
+    except Exception:
+        df['cycle_phase'] = float('nan')
+        df['cycle_amplitude'] = float('nan')
+        df['dominant_cycle_period'] = float('nan')
+
     return df
 
 
@@ -64,6 +82,10 @@ def save_features(session: Session, symbol: str, df: pd.DataFrame):
             'sector_volume_momentum': float(row['sector_volume_momentum']) if 'sector_volume_momentum' in row and not pd.isna(row['sector_volume_momentum']) else None,
             'sector_breadth_pct': float(row['sector_breadth_pct']) if 'sector_breadth_pct' in row and not pd.isna(row['sector_breadth_pct']) else None
         }
+        # Add cycle fields (may be present only on latest row)
+        payload['cycle_phase'] = float(row['cycle_phase']) if 'cycle_phase' in row and not pd.isna(row['cycle_phase']) else None
+        payload['cycle_amplitude'] = float(row['cycle_amplitude']) if 'cycle_amplitude' in row and not pd.isna(row['cycle_amplitude']) else None
+        payload['dominant_cycle_period'] = float(row['dominant_cycle_period']) if 'dominant_cycle_period' in row and not pd.isna(row['dominant_cycle_period']) else None
         if exists:
             for key, value in payload.items():
                 setattr(exists, key, value)

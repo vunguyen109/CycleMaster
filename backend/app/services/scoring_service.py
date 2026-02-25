@@ -4,6 +4,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 from app.models import models
 from app.utils.config import settings
+from app.services import cycle_service
 
 
 def _round_zone(values):
@@ -198,18 +199,57 @@ def detect_stock_phase(
 ):
     rs_score = relative_strength_score(df, vni_df)
     va_score = volume_accumulation_score(df)
-    regime = classify_regime(
-        df,
-        rs_score=rs_score,
-        va_score=va_score,
-        breadth20_pct=breadth20_pct,
-        breadth50_pct=breadth50_pct
-    )
-    return {
-        'phase': regime,
-        'rs_score': rs_score,
-        'va_score': va_score
-    }
+
+    # Attempt cycle-based phase detection using past data only
+    try:
+        window = max(int(getattr(settings, 'lookback_min', 150)), 120)
+        cycle = cycle_service.compute_cycle_for_series(df['close'], window=window)
+    except Exception:
+        cycle = None
+
+    if not cycle or not np.isfinite(cycle.get('cycle_phase', np.nan)):
+        # Fallback to legacy rule-based classification when cycle unavailable
+        regime = classify_regime(
+            df,
+            rs_score=rs_score,
+            va_score=va_score,
+            breadth20_pct=breadth20_pct,
+            breadth50_pct=breadth50_pct
+        )
+        return {'phase': regime, 'rs_score': rs_score, 'va_score': va_score}
+
+    phase = float(cycle.get('cycle_phase', float('nan')))
+    amplitude = float(cycle.get('cycle_amplitude', float('nan')))
+    dom_period = float(cycle.get('dominant_period', float('nan')))
+
+    # Convert phase to degrees in [-180,180]
+    deg = np.degrees(phase)
+
+    # Compute a simple amplitude-to-volatility ratio to distinguish strong cycles
+    last_price = float(df['close'].iloc[-1])
+    vol_price = float(df['close'].pct_change().dropna().tail(20).std() * last_price) if len(df) >= 5 else 0.0
+    amp_rel = amplitude / vol_price if vol_price and np.isfinite(amplitude) else 0.0
+
+    # Map angle quadrants to regime labels (no lookahead)
+    # -90..0: rising from trough -> accumulation
+    # 0..90: approaching peak -> markup
+    # 90..180: falling from peak -> distribution
+    # -180..-90: deep fall -> markdown
+    regime = None
+    if -90.0 <= deg < 0.0:
+        # Determine strength
+        if amp_rel > 0.8 and rs_score > 0 and va_score > 0 and breadth20_pct >= 40 and breadth50_pct >= 30:
+            regime = 'ACCUMULATION_STRONG'
+        else:
+            regime = 'ACCUMULATION_WEAK'
+    elif 0.0 <= deg < 90.0:
+        regime = 'MARKUP'
+    elif 90.0 <= deg <= 180.0:
+        regime = 'DISTRIBUTION'
+    else:
+        regime = 'MARKDOWN'
+
+    return {'phase': regime, 'rs_score': rs_score, 'va_score': va_score}
 
 
 def validate_signal_output(score_data: dict):
@@ -320,14 +360,41 @@ def score_stock(
         if sector_breadth > 55:
             sector_score += 3
     sector_score = float(np.clip(sector_score, 0, 10))
+    # Cycle-aware scoring: compute cycle component (0..10)
+    cycle_score_0_10 = 5.0
+    cycle_phase_val = None
+    if 'cycle_phase' in df.columns:
+        try:
+            cp = df['cycle_phase'].iloc[-1]
+            if np.isfinite(cp):
+                cycle_phase_val = float(cp)
+                cycle_cos = float(np.cos(cycle_phase_val))
+                # map cos(phase) in [-1,1] to [0,1] then to 0..10
+                cycle_score_0_10 = float(np.clip((cycle_cos + 1.0) / 2.0 * 10.0, 0.0, 10.0))
+        except Exception:
+            cycle_score_0_10 = 5.0
 
-    final_score_0_10 = (
-        (technical * settings.weight_technical) +
-        (rs_0_10 * settings.weight_rs) +
-        (liquidity_score * settings.weight_liquidity) +
-        (sector_score * settings.weight_sector)
+    # Weighted aggregation of components (all on 0..10 scale)
+    weights = {
+        'technical': float(getattr(settings, 'weight_technical', 0.0)),
+        'rs': float(getattr(settings, 'weight_rs', 0.0)),
+        'liquidity': float(getattr(settings, 'weight_liquidity', 0.0)),
+        'sector': float(getattr(settings, 'weight_sector', 0.0)),
+        'cycle': float(getattr(settings, 'weight_cycle', 0.0))
+    }
+    comp_sum = (
+        technical * weights['technical'] +
+        rs_0_10 * weights['rs'] +
+        liquidity_score * weights['liquidity'] +
+        sector_score * weights['sector'] +
+        cycle_score_0_10 * weights['cycle']
     )
-    score_value = float(np.clip(final_score_0_10 * 10, 0, 100))
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        final_score_0_10 = comp_sum
+    else:
+        final_score_0_10 = comp_sum / weight_sum
+    score_value = float(np.clip(final_score_0_10 * 10.0, 0.0, 100.0))
     market_alignment = 'NEUTRAL'
     if market_regime in ('MARKUP', 'ACCUMULATION'):
         market_alignment = 'ALIGNED'
@@ -344,6 +411,24 @@ def score_stock(
         score_value = float(np.clip(score_value * 0.7, 0, 100))
     confidence = score_value
 
+    # Apply cycle-based multiplier/penalty to favor bottoms and penalize mid-cycle
+    try:
+        if cycle_phase_val is not None and np.isfinite(cycle_phase_val):
+            cycle_norm = (float(np.cos(cycle_phase_val)) + 1.0) / 2.0
+            boost = float(getattr(settings, 'cycle_boost', 0.0))
+            # multiplier in [1 - boost, 1 + boost]
+            cycle_multiplier = 1.0 + (cycle_norm - 0.5) * 2.0 * boost
+            score_value = float(np.clip(score_value * cycle_multiplier, 0.0, 100.0))
+            confidence = score_value
+            # mid-cycle penalty
+            mid_thresh = float(getattr(settings, 'cycle_mid_penalty_threshold', 0.2))
+            mid_pen = float(getattr(settings, 'cycle_mid_penalty', 0.0))
+            if abs(float(np.cos(cycle_phase_val))) < mid_thresh and mid_pen > 0:
+                score_value = float(np.clip(score_value * (1.0 - mid_pen), 0.0, 100.0))
+                confidence = score_value
+    except Exception:
+        pass
+
     if regime in ('DISTRIBUTION', 'MARKDOWN'):
         return {
             'regime': regime,
@@ -356,7 +441,7 @@ def score_stock(
             'buy_zone': None,
             'tp_zone': None,
             'stop_loss': None,
-            'risk_reward': None
+            'risk_reward': 0.0
         }
 
     # Fake breakout filter
@@ -391,7 +476,7 @@ def score_stock(
             'buy_zone': None,
             'tp_zone': None,
             'stop_loss': None,
-            'risk_reward': None
+            'risk_reward': 0.0
         }
 
     buy_zone, tp, stop, rr = build_trade_zones(float(breakout_level), float(last['atr']))
@@ -407,7 +492,7 @@ def score_stock(
             'buy_zone': None,
             'tp_zone': None,
             'stop_loss': None,
-            'risk_reward': None
+            'risk_reward': 0.0
         }
     setup_tier = None
     if rr is not None and np.isfinite(rr):
