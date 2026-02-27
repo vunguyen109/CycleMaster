@@ -11,7 +11,7 @@
         </div>
         <div class="flex flex-wrap gap-2 mt-3">
           <LiquidityBadge :score="detail.features.liquidity_score" />
-          <SetupStatusBadge :status="detail.suggested_trade.setup_status" />
+          <SetupStatusBadge :status="detail.suggested_trade.action || detail.suggested_trade.setup_status" />
           <MarketAlignmentBadge :alignment="detail.suggested_trade.market_alignment" />
         </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-sm">
@@ -28,10 +28,12 @@
       <div class="p-4 bg-white rounded-xl border border-slate-200">
         <h3 class="font-semibold mb-2">Gợi ý giao dịch (nghìn đ)</h3>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div>Vùng mua: {{ formatZone(detail.suggested_trade.buy_zone) }}</div>
-          <div>Chốt lời: {{ formatMoney(detail.suggested_trade.take_profit) }}</div>
-          <div>Cắt lỗ: {{ formatMoney(detail.suggested_trade.stop_loss) }}</div>
-          <div>R:R: {{ formatRisk(detail.suggested_trade.risk_reward) }}</div>
+          <div>Action: {{ detail.suggested_trade.action }}</div>
+          <div>Entry: {{ formatMoney(detail.suggested_trade.entry) }}</div>
+          <div>Target: {{ formatMoney(detail.suggested_trade.target) }}</div>
+          <div>Stop: {{ formatMoney(detail.suggested_trade.stop) }}</div>
+          <div>R:R: {{ formatRisk(detail.suggested_trade.rr) }}</div>
+          <div>Quality: {{ detail.suggested_trade.setup_quality?.toFixed(2) || '-' }}</div>
           <div>Tier: {{ detail.suggested_trade.setup_tier || '-' }}</div>
         </div>
       </div>
@@ -63,13 +65,11 @@ const formatMoney = (value) => {
   return (num / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
-const formatZone = (zone) => {
-  if (!zone || zone === '-') return '-'
-  const parts = String(zone).split('-')
-  if (parts.length !== 2) return formatMoney(zone)
-  const a = Number(parts[0])
-  const b = Number(parts[1])
-  if (Number.isNaN(a) || Number.isNaN(b)) return zone
+const formatZone = (low, high) => {
+  if (low === null || low === undefined || high === null || high === undefined) return '-'
+  const a = Number(low)
+  const b = Number(high)
+  if (Number.isNaN(a) || Number.isNaN(b)) return '-'
   const left = (a / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   const right = (b / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   return `${left} - ${right}`

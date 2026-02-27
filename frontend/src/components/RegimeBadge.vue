@@ -15,7 +15,7 @@ const props = defineProps({
 const badgeClass = computed(() => {
   switch (props.regime) {
     case 'MARKUP':
-      return props.score !== null && props.score >= 70 ? 'bg-mint/40 text-mint' : 'bg-mint/20 text-mint'
+      return props.score !== null && props.score >= 75 ? 'bg-mint/40 text-mint' : 'bg-mint/20 text-mint'
     case 'ACCUMULATION':
     case 'ACCUMULATION_STRONG':
       return 'bg-sky/40 text-sky'

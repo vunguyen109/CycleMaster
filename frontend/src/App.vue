@@ -5,6 +5,7 @@
         <div class="text-xl font-semibold font-display">CycleMaster</div>
         <nav class="flex gap-4 text-sm">
           <RouterLink to="/" class="hover:text-sky">Tổng quan</RouterLink>
+          <RouterLink to="/analysis" class="hover:text-sky">Phân tích</RouterLink>
           <RouterLink to="/alerts" class="hover:text-sky">Cảnh báo rủi ro</RouterLink>
           <RouterLink to="/backtest" class="hover:text-sky">Kiểm định chiến lược</RouterLink>
         </nav>

@@ -13,6 +13,13 @@ const props = defineProps({
 
 const label = computed(() => {
   switch (props.status) {
+    case 'BUY':
+      return 'Buy'
+    case 'WATCH':
+      return 'Watch'
+    case 'AVOID':
+      return 'Avoid'
+    // keep old mappings just in case
     case 'VALID':
       return 'Valid'
     case 'WEAK':
@@ -30,6 +37,12 @@ const label = computed(() => {
 
 const badgeClass = computed(() => {
   switch (props.status) {
+    case 'BUY':
+      return 'bg-mint/30 text-mint'
+    case 'WATCH':
+      return 'bg-amber/20 text-amber'
+    case 'AVOID':
+      return 'bg-rose/20 text-rose'
     case 'VALID':
       return 'bg-mint/30 text-mint'
     case 'WEAK':

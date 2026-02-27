@@ -70,28 +70,17 @@ def run_daily_scan():
             liquidity_by_symbol[symbol] = liquidity_service.compute_liquidity_metrics(df)
         liquidity_service.rank_liquidity(liquidity_by_symbol)
 
-        # Step 2: Liquidity filtering
-        scan_symbols = []
-        filtered = []
+        # Step 2: Liquidity filtering is disabled for trading signals.
+        # we still compute liquidity metrics for informational purposes but every
+        # validated symbol will be evaluated regardless of value/volume.
+        scan_symbols = list(validated.keys())
+        if not scan_symbols:
+            logger.warning('No symbols to scan after validation')
+        # log any that fail the traditional thresholds but do not exclude them
         for symbol, metrics in liquidity_by_symbol.items():
-            if metrics.get('avg_value_20') is not None and metrics.get('avg_value_20') >= settings.liquidity_min_scan_value:
-                scan_symbols.append(symbol)
-            else:
-                filtered.append(symbol)
-        if filtered:
-            logger.info(f'Liquidity filtered {len(filtered)} symbols: {", ".join(sorted(filtered))}')
-        if len(scan_symbols) < settings.min_universe_size:
-            logger.warning(f'Universe size below minimum: {len(scan_symbols)}/{settings.min_universe_size}')
-
-        tradable_symbols = []
-        for symbol in scan_symbols:
-            metrics = liquidity_by_symbol.get(symbol, {})
-            if liquidity_service.passes_liquidity_filter(
-                metrics,
-                min_avg_volume=settings.liquidity_min_avg_volume,
-                min_avg_value=settings.liquidity_min_avg_value
-            ):
-                tradable_symbols.append(symbol)
+            if metrics.get('avg_value_20') is not None and metrics.get('avg_value_20') < settings.liquidity_min_scan_value:
+                logger.info(f'Liquidity below scan threshold but will still be scored: {symbol}')
+        tradable_symbols = scan_symbols
 
         # Step 3: Feature calculation
         breadth20_hits = 0
@@ -103,7 +92,6 @@ def run_daily_scan():
             df = validated[symbol]
             if len(df) < lookback:
                 logger.warning(f'Insufficient OHLCV for {symbol}: {len(df)} rows, need >= {lookback}')
-                insufficient.append(symbol)
             df = feature_service.calculate_features(df, lookback=lookback)
             percentile = liquidity_by_symbol.get(symbol, {}).get('liquidity_percentile_rank')
             if percentile is not None:
@@ -187,8 +175,8 @@ def run_daily_scan():
 
         # Step 6-8: Scoring, signal validation, save
         regime_counts = {}
+        action_counts = {'BUY': 0, 'WATCH': 0, 'AVOID': 0}
         score_values = []
-        valid_setups = 0
         for symbol, df in feature_cache.items():
             score = scoring_service.score_stock(
                 session,
@@ -206,42 +194,13 @@ def run_daily_scan():
                 logger.warning(f'Signal validation failed for {symbol}: {reason}')
                 continue
             scoring_service.save_score(session, symbol, df['date'].iloc[-1].date(), score)
-            logger.info(f'Scored {symbol}: regime={score["regime"]} score={score["score"]:.1f}')
+            logger.info(f'Scored {symbol}: regime={score["regime"]} score={score["score"]:.1f} action={score.get("action")}')
             regime_counts[score['regime']] = regime_counts.get(score['regime'], 0) + 1
+            action_counts[score.get('action', 'AVOID')] = action_counts.get(score.get('action', 'AVOID'), 0) + 1
             score_values.append(score['score'])
-            if score.get('setup_status') == 'VALID':
-                valid_setups += 1
-            if score.get('buy_zone') == '0.0' or score.get('buy_zone') == '0':
-                logger.warning(f'QC buy_zone zero for {symbol}')
-            if score.get('risk_reward') is not None and score.get('risk_reward') < 0:
-                logger.warning(f'QC negative risk_reward for {symbol}')
-            for key in ('buy_zone', 'tp_zone', 'stop_loss', 'risk_reward'):
-                if key not in score:
-                    continue
-                value = score.get(key)
-                if value is None:
-                    continue
-                if isinstance(value, (int, float)):
-                    if not (float(value) == float(value)):
-                        logger.warning(f'QC invalid numeric {key} for {symbol}')
-                elif isinstance(value, str):
-                    if value.strip() == '' or value.strip().lower() in ('nan', 'none'):
-                        logger.warning(f'QC invalid numeric {key} for {symbol}')
-            for key in ('score', 'confidence'):
-                value = score.get(key)
-                if value is None:
-                    logger.warning(f'QC missing numeric {key} for {symbol}')
-                    continue
-                try:
-                    num = float(value)
-                except (TypeError, ValueError):
-                    logger.warning(f'QC invalid numeric {key} for {symbol}')
-                    continue
-                if not (num == num):
-                    logger.warning(f'QC invalid numeric {key} for {symbol}')
+            # legacy QC checks removed; entry/stop/target are always produced so no need
+            # check buy_zone or risk_reward negativity anymore
 
-        if filtered:
-            logger.info(f'Liquidity filtered count: {len(filtered)}')
         if regime_counts:
             logger.info(f'Regime distribution: {regime_counts}')
             total_regime = sum(regime_counts.values())
@@ -254,28 +213,9 @@ def run_daily_scan():
         if score_values:
             avg_score = sum(score_values) / max(len(score_values), 1)
             logger.info(f'Average score: {avg_score:.2f}')
-        logger.info(f'Valid setups count: {valid_setups}')
+        logger.info(f'Action distribution: BUY={action_counts.get("BUY",0)} WATCH={action_counts.get("WATCH",0)} AVOID={action_counts.get("AVOID",0)}')
 
-        # Save low-liquidity statuses
-        for symbol in filtered:
-            df = validated.get(symbol)
-            if df is None or df.empty:
-                continue
-            score = {
-                'regime': 'NEUTRAL',
-                'setup_status': 'LOW_LIQUIDITY',
-                'market_alignment': 'NEUTRAL',
-                'model_version': 'v2',
-                'setup_tier': None,
-                'confidence': 0.0,
-                'score': 0.0,
-                'buy_zone': None,
-                'tp_zone': None,
-                'stop_loss': None,
-                'risk_reward': 0.0
-            }
-            scoring_service.save_score(session, symbol, df['date'].iloc[-1].date(), score)
-            logger.info(f'Status {symbol}: LOW_LIQUIDITY')
+
 
         top_scores = session.execute(
             text(

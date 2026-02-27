@@ -68,7 +68,8 @@ class StockScore(Base):
     date = Column(Date, index=True)
     regime = Column(String)
     score = Column(Float)
-    buy_zone = Column(Float)
+    buy_zone_low = Column(Float)  # replaces string buy_zone
+    buy_zone_high = Column(Float)
     tp_zone = Column(Float)
     stop_loss = Column(Float)
     risk_reward = Column(Float)

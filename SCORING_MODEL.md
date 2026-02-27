@@ -100,10 +100,7 @@ Replace strict conditions (e.g., RSI between 40–55) with scoring ranges.
 
 ## Synchronization Rules
 
-- If stock phase is DISTRIBUTION or MARKDOWN, set buy_zone = null.
-- If stock phase is DISTRIBUTION or MARKDOWN, set take_profit = null.
-- If stock phase is DISTRIBUTION or MARKDOWN, set risk_reward = null.
-- If stock phase is DISTRIBUTION or MARKDOWN, set setup_status = "INVALID".
+- No hard filters based on phase; every stock is scored and issued a signal regardless of phase.
 - If market_regime == MARKUP, multiply stock_score by 1.1.
 - If market_regime == ACCUMULATION, multiply stock_score by 1.05.
 - If market_regime == DISTRIBUTION, multiply stock_score by 0.8.
@@ -145,15 +142,25 @@ FinalScore =
 - Tier B: RR 1.5–2.5
 - Tier C: RR < 1.5
 
-## Buy Zone & Risk Model Fix
+## Trade Signal Generation
 
-- If no valid setup, set buy_zone = null and setup_status = "NO_SETUP".
-- Never return zero values for buy_zone/take_profit/stop_loss.
-- Use ATR-based risk model:
-- entry = breakout level
-- stop_loss = entry - 1.5 * ATR
-- take_profit = entry + 2.5 * ATR
-- risk_reward = (take_profit - entry) / (entry - stop_loss)
+- “buy_zone” is deprecated and not returned any more; the system emits an explicit
+  entry price for every stock.
+- **Entry** is always the latest close price (close must be positive and is never zero).
+- **Stop** = entry - 1.5 × ATR; ATR is computed from `atr` field or, if missing, replaced by ma20 or a surrogate derived from the 20‑day high‑low range.
+- **Target** = entry + multiplier × ATR where the multiplier depends on breakout strength:
+  - `strength = max(0, close / rolling_20_high - 1)`
+  - `target_mult = 2 + strength × 5` (so a base of 2 that increases with breakout strength)
+- **Risk‑reward** = (target − entry) / (entry − stop) and is therefore dynamic.  It is never a constant 1.5.
+- RR, entry, stop and target are always computed for every stock (no hard filters or missing values).
+- **Setup quality** metric = score × RR used for ranking opportunities.
+- Scores are penalised if phase = DISTRIBUTION (×0.8) or MARKDOWN (×0.6) to deprioritise weak regimes.
+- If close ≤ 0 the symbol is skipped.
+- A new ``action`` field replaces old setup_status values, computed as:
+  * score ≥ 70 → BUY
+  * score ≥ 55 → WATCH
+  * otherwise → AVOID
+- A ``setup_quality`` metric = score × RR is attached for ranking.
 
 ## Fake Breakout Filter
 

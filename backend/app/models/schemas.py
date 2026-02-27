@@ -17,10 +17,19 @@ class StockTopOut(BaseModel):
     regime: str
     score: float
     last_close: Optional[float] = None
-    buy_zone: Optional[float] = None
+    # legacy fields retained for backward compatibility
+    buy_zone_low: Optional[float] = None
+    buy_zone_high: Optional[float] = None
     take_profit: Optional[float] = None
     stop_loss: Optional[float] = None
     risk_reward: Optional[float] = None
+    # new trading signal fields
+    action: Optional[str] = None
+    entry: Optional[float] = None
+    stop: Optional[float] = None
+    target: Optional[float] = None
+    rr: Optional[float] = None
+    setup_quality: Optional[float] = None
     liquidity_score: Optional[float] = None
     setup_status: Optional[str] = None
     market_alignment: Optional[str] = None
@@ -32,7 +41,7 @@ class StockDetailOut(BaseModel):
     features: dict
     regime: str
     score: float
-    suggested_trade: dict
+    suggested_trade: dict  # will contain action, entry/stop/target, rr, etc
 
 
 class ScanLatestOut(BaseModel):
@@ -57,8 +66,14 @@ class PortfolioItemOut(BaseModel):
     latest_score: Optional[float] = None
     warning: Optional[str] = None
     last_close: Optional[float] = None
+    last_close_date: Optional[dt_date] = None
     pnl_vnd: Optional[float] = None
-    buy_zone: Optional[float] = None
+    entry: Optional[float] = None
+    stop: Optional[float] = None
+    target: Optional[float] = None
+    rr: Optional[float] = None
+    buy_zone_low: Optional[float] = None
+    buy_zone_high: Optional[float] = None
     take_profit: Optional[float] = None
 
 

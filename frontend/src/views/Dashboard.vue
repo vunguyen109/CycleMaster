@@ -1,17 +1,26 @@
 <template>
   <div class="space-y-6">
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <StatCard label="Chu kỳ thị trường" :value="regimeDisplay" :hint="regimeHint" />
-      <StatCard label="Độ tin cậy" :value="marketRegime ? marketRegime.confidence.toFixed(1) + '%' : '-'" />
-      <StatCard label="Lần quét gần nhất" :value="scanLatest?.date || '-'" />
+    <div class="flex items-center justify-between">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard label="Chu kỳ thị trường" :value="regimeDisplay" :hint="regimeHint" />
+        <StatCard label="Độ tin cậy" :value="marketRegime ? marketRegime.confidence.toFixed(1) + '%' : '-'" />
+        <StatCard label="Lần quét gần nhất" :value="scanLatest?.date || '-'" />
+      </div>
+      <button
+        class="px-3 py-1 bg-sky text-white rounded"
+        @click="triggerAnalysis"
+        :disabled="loading"
+      >
+        Phân tích
+      </button>
     </div>
 
     <section>
-      <h2 class="text-lg font-semibold mb-2">Top tiềm năng</h2>
+      <h2 class="text-lg font-semibold mb-2">Top Trade Setups</h2>
       <LoadingState v-if="loading" />
       <ErrorBanner v-else-if="error" :message="error" />
-      <StockTable v-else :rows="topStocks" />
-    </section>
+      <StockTable v-else :rows="topTrades" />
+      </section>
 
     <section class="grid grid-cols-1 md:grid-cols-1 gap-4">
       <div class="p-4 bg-white rounded-xl border border-slate-200">
@@ -42,11 +51,13 @@
               <tr>
                 <th class="text-left py-2">Mã</th>
                 <th class="text-left py-2">Giá mua (nghìn đ)</th>
+                <th class="text-left py-2">Giá hiện tại (nghìn đ)</th>
+                <th class="text-left py-2">Ngày cập nhật</th>
                 <th class="text-left py-2">Số lượng</th>
                 <th class="text-left py-2">Lời/lỗ (nghìn đ)</th>
                 <th class="text-left py-2">Chu kỳ</th>
-                <th class="text-left py-2">Vùng mua (nghìn đ)</th>
-                <th class="text-left py-2">Chốt lời (nghìn đ)</th>
+                <th class="text-left py-2">Entry (nghìn đ)</th>
+                <th class="text-left py-2">Target (nghìn đ)</th>
                 <th class="text-left py-2">Thao tác</th>
               </tr>
             </thead>
@@ -54,15 +65,17 @@
               <tr v-for="p in portfolio" :key="p.symbol" class="border-t border-slate-100">
                 <td class="py-2">{{ p.symbol }}</td>
                 <td class="py-2">{{ formatMoney(p.avg_price) }}</td>
+                <td class="py-2">{{ formatMoney(p.last_close) }}</td>
+                <td class="py-2 text-xs">{{ p.last_close_date || '-' }}</td>
                 <td class="py-2">{{ formatNumber(p.quantity) }}</td>
                 <td class="py-2" :class="p.pnl_vnd >= 0 ? 'text-mint' : 'text-rose'">
-                  {{ formatMoney(p.pnl_vnd || 0) }}
+                  {{ formatPnL(p.pnl_vnd || 0) }}
                 </td>
                 <td class="py-2">
                   <RegimeBadge v-if="p.latest_regime" :regime="p.latest_regime" />
                 </td>
-                <td class="py-2">{{ formatZone(p.buy_zone) }}</td>
-                <td class="py-2">{{ formatMoney(p.take_profit) }}</td>
+                <td class="py-2">{{ formatMoney(p.entry) }}</td>
+                <td class="py-2">{{ formatMoney(p.target) }}</td>
                 <td class="py-2 flex gap-2">
                   <button @click="editPortfolio(p)" class="text-sky">Sửa</button>
                   <button @click="removePortfolio(p.symbol)" class="text-rose">Xóa</button>
@@ -76,7 +89,7 @@
     </section>
 
     <section>
-      <CycleMoneyFlowChart :rows="topStocks" :series="vnindexSeries" />
+      <CycleMoneyFlowChart :rows="topTrades" :series="vnindexSeries" />
     </section>
 
     <section class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -95,7 +108,7 @@
 
 <script setup>
 import { ref, onMounted, computed, reactive } from 'vue'
-import { fetchMarketRegime, fetchTopStocks, fetchScanLatest, fetchAlerts, fetchPortfolio, fetchVnindexSeries, createPortfolioItem, updatePortfolioItem, deletePortfolioItem } from '../services/api'
+import { fetchMarketRegime, fetchAllAnalysis, fetchScanLatest, fetchAlerts, fetchPortfolio, fetchVnindexSeries, createPortfolioItem, updatePortfolioItem, deletePortfolioItem } from '../services/api'
 import StatCard from '../components/StatCard.vue'
 import LoadingState from '../components/LoadingState.vue'
 import ErrorBanner from '../components/ErrorBanner.vue'
@@ -104,7 +117,34 @@ import RegimeBadge from '../components/RegimeBadge.vue'
 import CycleMoneyFlowChart from '../components/CycleMoneyFlowChart.vue'
 
 const marketRegime = ref(null)
-const topStocks = ref([])
+const allAnalysis = ref([])   // entire universe from /analysis/latest
+const topTrades = computed(() => {
+  // sort by score desc and take top 10; optionally filter very low liquidity
+  let arr = Array.isArray(allAnalysis.value) ? [...allAnalysis.value] : []
+  // ensure action field exists
+  arr = arr.map(r => {
+    if (!r.action) {
+      const score = r.score ?? 0
+      return {
+        ...r,
+        action: score >= 75 ? 'BUY' : score >= 60 ? 'WATCH' : 'AVOID'
+      }
+    }
+    return r
+  })
+  // sort by highest setup_quality first (fallback to score if missing)
+  arr.sort((a, b) => {
+    const qa = a.setup_quality ?? a.score ?? 0
+    const qb = b.setup_quality ?? b.score ?? 0
+    return qb - qa
+  })
+  const slice = arr.slice(0, 10)
+  // pad if under 10
+  while (slice.length < 10) {
+    slice.push({ symbol: '-', score: 0, phase: '-', action: '-', entry: null, stop: null, target: null, rr: null, setup_quality: 0 })
+  }
+  return slice
+})
 const scanLatest = ref(null)
 const alerts = ref([])
 const portfolio = ref([])
@@ -178,13 +218,19 @@ const formatMoney = (value) => {
   return (num / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
-const formatZone = (zone) => {
-  if (!zone || zone === '-') return '-'
-  const parts = String(zone).split('-')
-  if (parts.length !== 2) return formatMoney(zone)
-  const a = Number(parts[0])
-  const b = Number(parts[1])
-  if (Number.isNaN(a) || Number.isNaN(b)) return zone
+const formatPnL = (value) => {
+  if (value === null || value === undefined || value === '-' || value === '') return '-'
+  const num = Number(value)
+  if (Number.isNaN(num)) return value
+  // show profit/loss in thousands
+  return (num / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
+const formatZone = (low, high) => {
+  if (low === null || low === undefined || high === null || high === undefined) return '-'
+  const a = Number(low)
+  const b = Number(high)
+  if (Number.isNaN(a) || Number.isNaN(b)) return '-'
   const left = (a / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   const right = (b / 1000).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   return `${left} - ${right}`
@@ -196,6 +242,8 @@ const resetForm = () => {
   form.quantity = ''
   editingSymbol.value = ''
 }
+
+const STORAGE_KEY = 'dashboardData'
 
 const refreshPortfolio = async () => {
   const res = await fetchPortfolio()
@@ -244,26 +292,74 @@ const removePortfolio = async (symbol) => {
   }
 }
 
-onMounted(async () => {
+async function loadFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const obj = JSON.parse(raw)
+      scanLatest.value = obj.scanLatest
+      marketRegime.value = obj.marketRegime
+      allAnalysis.value = obj.allAnalysis
+      alerts.value = obj.alerts
+      vnindexSeries.value = obj.vnindexSeries
+    }
+  } catch (e) {
+    console.warn('failed to parse dashboard data', e)
+  }
+}
+
+async function saveToStorage() {
+  try {
+    const obj = {
+      scanLatest: scanLatest.value,
+      marketRegime: marketRegime.value,
+      allAnalysis: allAnalysis.value,
+      alerts: alerts.value,
+      vnindexSeries: vnindexSeries.value
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(obj))
+  } catch (e) {
+    console.warn('failed to save dashboard data', e)
+  }
+}
+
+async function refreshAll() {
+  error.value = ''
   try {
     const scanRes = await fetchScanLatest()
     scanLatest.value = scanRes.data
-    const [regimeRes, topRes, alertRes, portfolioRes, vnindexRes] = await Promise.all([
+    const [regimeRes, allRes, alertRes, vnindexRes] = await Promise.all([
       fetchMarketRegime(),
-      fetchTopStocks(),
+      fetchAllAnalysis(),
       fetchAlerts(),
-      fetchPortfolio(),
       fetchVnindexSeries()
     ])
     marketRegime.value = regimeRes.data
-    topStocks.value = topRes.data
+    allAnalysis.value = allRes.data
     alerts.value = alertRes.data
-    portfolio.value = portfolioRes.data
     vnindexSeries.value = vnindexRes.data.series
+
+    await refreshPortfolio()
+    saveToStorage()
   } catch (e) {
     error.value = 'Không thể tải dữ liệu tổng quan'
+  }
+}
+
+async function triggerAnalysis() {
+  loading.value = true
+  try {
+    await refreshAll()
   } finally {
     loading.value = false
   }
+}
+
+onMounted(async () => {
+  await loadFromStorage()
+  // always fetch portfolio since user may change it independently
+  await refreshPortfolio()
+  // user must click Phân tích to update the rest
+  loading.value = false
 })
 </script>

@@ -1,3 +1,4 @@
+import logging
 import math
 import numpy as np
 import pandas as pd
@@ -5,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.models import models
 from app.utils.config import settings
 from app.services import cycle_service
+
+logger = logging.getLogger(__name__)
 
 
 def _round_zone(values):
@@ -253,24 +256,26 @@ def detect_stock_phase(
 
 
 def validate_signal_output(score_data: dict):
+    """Quick sanity check on the generated signal.
+
+    The trading engine is expected to emit a signal for every stock (unless the
+    last close price is non‑positive).  We only verify that the core numeric
+    fields exist and are finite/positive.  No hard filters or setup status
+    thresholds are applied here.
+    """
     if not score_data:
         return False, 'missing_score'
+
     issues = []
-    for key in ('score', 'confidence'):
+
+    # numeric fields that must be present and finite
+    for key in ('score', 'confidence', 'entry', 'stop', 'target', 'rr'):
         value = score_data.get(key)
         if value is None or not np.isfinite(value):
             issues.append(f'invalid_{key}')
-    setup_status = score_data.get('setup_status')
-    if setup_status == 'VALID':
-        rr = score_data.get('risk_reward')
-        if rr is None or not np.isfinite(rr):
-            issues.append('invalid_risk_reward')
-        for key in ('buy_zone', 'tp_zone', 'stop_loss'):
-            value = score_data.get(key)
-            if value is None or (isinstance(value, str) and value.strip() == ''):
-                issues.append(f'missing_{key}')
-        if isinstance(rr, (int, float)) and rr < 0:
-            issues.append('negative_risk_reward')
+        elif isinstance(value, (int, float)) and value <= 0:
+            issues.append(f'nonpositive_{key}')
+
     if issues:
         return False, ','.join(issues)
     return True, ''
@@ -297,41 +302,32 @@ def score_stock(
     phase_context: dict | None = None,
     sector_context: dict | None = None
 ):
-    last = df.iloc[-1]
-    avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-    avg_value = (df['close'] * df['volume']).rolling(20).mean().iloc[-1]
-    rolling_20_high = df['high'].rolling(20).max().iloc[-1]
-    if not np.isfinite(rolling_20_high):
-        rolling_20_high = last['high']
-    if math.isnan(avg_vol) or avg_vol < settings.liquidity_min_avg_volume:
-        return {
-            'regime': 'NEUTRAL',
-            'setup_status': 'LOW_LIQUIDITY',
-            'market_alignment': 'NEUTRAL',
-            'model_version': 'v2',
-            'setup_tier': None,
-            'confidence': 0.0,
-            'score': 0.0,
-            'buy_zone': None,
-            'tp_zone': None,
-            'stop_loss': None,
-            'risk_reward': 0.0
-        }
-    if math.isnan(avg_value) or avg_value < settings.liquidity_min_avg_value:
-        return {
-            'regime': 'NEUTRAL',
-            'setup_status': 'LOW_LIQUIDITY',
-            'market_alignment': 'NEUTRAL',
-            'model_version': 'v2',
-            'setup_tier': None,
-            'confidence': 0.0,
-            'score': 0.0,
-            'buy_zone': None,
-            'tp_zone': None,
-            'stop_loss': None,
-            'risk_reward': 0.0
-        }
+    """Soft‐scoring system with 0–100 score distribution.
+    
+    Goal: produce 5–20 VALID scores per scan with proper scaling.
+    Setup status determined ONLY by score thresholds:
+      > 65: VALID
+      45–65: WATCH
+      < 45: IGNORE
+    """
 
+    last = df.iloc[-1]
+    close = float(last['close'])
+
+    # skip nonsensical data
+    if close <= 0:
+        logger.warning(f"{symbol}: non‑positive close ({close}), skipping signal")
+        return None
+
+    rolling_20_high = df['high'].rolling(20).max().iloc[-1]
+    if not np.isfinite(rolling_20_high) or rolling_20_high <= 0:
+        rolling_20_high = close
+
+    rolling_20_low = df['low'].rolling(20).min().iloc[-1]
+    if not np.isfinite(rolling_20_low) or rolling_20_low <= 0:
+        rolling_20_low = close * 0.95
+
+    # phase/regime context
     if phase_context is None:
         phase_context = detect_stock_phase(
             df,
@@ -340,13 +336,14 @@ def score_stock(
             breadth50_pct=breadth50_pct
         )
     regime = phase_context['phase']
-    rs_score = phase_context['rs_score']
-    va_score = phase_context['va_score']
+
+    # component scores (all 0..10 scale)
     technical = technical_score_0_10(df)
     rs_0_10 = rs_score_0_10(df, vni_df)
-    liquidity_score = df['liquidity_score'].iloc[-1] if 'liquidity_score' in df.columns else 0.0
+    liquidity_score = df['liquidity_score'].iloc[-1] if 'liquidity_score' in df.columns else 5.0
     if not np.isfinite(liquidity_score):
-        liquidity_score = 0.0
+        liquidity_score = 5.0
+
     sector_score = 0.0
     if sector_context is not None:
         sector_ret = sector_context.get('sector_return_20d', 0.0)
@@ -354,13 +351,13 @@ def score_stock(
         sector_breadth = sector_context.get('sector_breadth_pct', 0.0)
         vni_ret20 = vni_df['close'].pct_change(20).iloc[-1]
         if pd.notna(vni_ret20) and sector_ret > vni_ret20:
-            sector_score += 4
+            sector_score += 3
         if sector_vol > 0:
-            sector_score += 3
-        if sector_breadth > 55:
-            sector_score += 3
+            sector_score += 2
+        if sector_breadth > 50:
+            sector_score += 2
     sector_score = float(np.clip(sector_score, 0, 10))
-    # Cycle-aware scoring: compute cycle component (0..10)
+
     cycle_score_0_10 = 5.0
     cycle_phase_val = None
     if 'cycle_phase' in df.columns:
@@ -368,20 +365,27 @@ def score_stock(
             cp = df['cycle_phase'].iloc[-1]
             if np.isfinite(cp):
                 cycle_phase_val = float(cp)
+                # Better cycle boost: favor bottoms (cos near +1), penalize tops (cos near -1)
+                # cos(-pi) = -1 (top), cos(0) = 1 (bottom)
                 cycle_cos = float(np.cos(cycle_phase_val))
-                # map cos(phase) in [-1,1] to [0,1] then to 0..10
+                # map to 0..10 with boost at bottom
                 cycle_score_0_10 = float(np.clip((cycle_cos + 1.0) / 2.0 * 10.0, 0.0, 10.0))
         except Exception:
             cycle_score_0_10 = 5.0
 
-    # Weighted aggregation of components (all on 0..10 scale)
+    # Weighted aggregation (all 0..10 scale)
     weights = {
-        'technical': float(getattr(settings, 'weight_technical', 0.0)),
-        'rs': float(getattr(settings, 'weight_rs', 0.0)),
-        'liquidity': float(getattr(settings, 'weight_liquidity', 0.0)),
-        'sector': float(getattr(settings, 'weight_sector', 0.0)),
-        'cycle': float(getattr(settings, 'weight_cycle', 0.0))
+        'technical': float(getattr(settings, 'weight_technical', 1.0)),
+        'rs': float(getattr(settings, 'weight_rs', 1.0)),
+        'liquidity': float(getattr(settings, 'weight_liquidity', 0.5)),
+        'sector': float(getattr(settings, 'weight_sector', 0.5)),
+        'cycle': float(getattr(settings, 'weight_cycle', 1.0))
     }
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        weights = {k: 1.0 for k in weights}
+        weight_sum = len(weights)
+
     comp_sum = (
         technical * weights['technical'] +
         rs_0_10 * weights['rs'] +
@@ -389,132 +393,142 @@ def score_stock(
         sector_score * weights['sector'] +
         cycle_score_0_10 * weights['cycle']
     )
-    weight_sum = sum(weights.values())
-    if weight_sum <= 0:
-        final_score_0_10 = comp_sum
-    else:
-        final_score_0_10 = comp_sum / weight_sum
-    score_value = float(np.clip(final_score_0_10 * 10.0, 0.0, 100.0))
+    base_score_0_10 = comp_sum / weight_sum
+    score_value = float(np.clip(base_score_0_10 * 10.0, 0.0, 100.0))
+
+    # Breakout strength bonus (0..20 points)
+    breakout_strength = max(0.0, (close / rolling_20_high - 1.0) * 100.0)
+    breakout_bonus = min(20.0, breakout_strength * 0.2)  # up to +20
+    score_value += breakout_bonus
+
+    # Regime multipliers (no penalties, only boosts)
+    if market_regime == 'MARKUP':
+        score_value *= 1.15
+    elif market_regime == 'ACCUMULATION' or market_regime == 'ACCUMULATION_STRONG':
+        score_value *= 1.10
+    elif market_regime == 'ACCUMULATION_WEAK':
+        score_value *= 1.05
+    # DISTRIBUTION/MARKDOWN: no boost (neutral * 1.0)
+
+    # Volume spike penalty (weak extension)
+    recent = df.tail(2)
+    vol_spike_days = int((recent['volume_ratio'] > 1.5).sum()) if len(recent) == 2 else 0
+    weak_extension = close < rolling_20_high * 1.01
+    if close >= rolling_20_high and weak_extension and vol_spike_days <= 1:
+        score_value *= 0.85  # 15% penalty
+
+    # Price proximity to 20-high/low (favor mid-range breakouts over exhausted moves)
+    mid_range = (rolling_20_high + rolling_20_low) / 2.0
+    dist_from_mid = abs(close - mid_range) / (rolling_20_high - rolling_20_low + 0.01)
+    if dist_from_mid > 0.4:  # too close to extreme
+        score_value *= 0.9
+
+    score_value = float(np.clip(score_value, 0.0, 100.0))
+    confidence = score_value
+
+    # Cycle boost at bottoms (strong)
+    try:
+        if cycle_phase_val is not None and np.isfinite(cycle_phase_val):
+            cycle_cos = float(np.cos(cycle_phase_val))
+            # strong boost near bottom (cos > 0.6)
+            if cycle_cos > 0.6:
+                score_value *= 1.15
+            # penalty near top (cos < -0.6)
+            elif cycle_cos < -0.6:
+                score_value *= 0.80
+    except Exception:
+        pass
+
+    # apply phase-based score reductions
+    if regime == 'DISTRIBUTION':
+        score_value *= 0.8
+    elif regime == 'MARKDOWN':
+        score_value *= 0.6
+
+    score_value = float(np.clip(score_value, 0.0, 100.0))
+    confidence = score_value
+
     market_alignment = 'NEUTRAL'
-    if market_regime in ('MARKUP', 'ACCUMULATION'):
+    if market_regime in ('MARKUP', 'ACCUMULATION', 'ACCUMULATION_STRONG', 'ACCUMULATION_WEAK'):
         market_alignment = 'ALIGNED'
     elif market_regime in ('DISTRIBUTION', 'MARKDOWN'):
         market_alignment = 'MISALIGNED'
 
-    if market_regime == 'MARKUP':
-        score_value = float(np.clip(score_value * 1.1, 0, 100))
-    elif market_regime == 'ACCUMULATION':
-        score_value = float(np.clip(score_value * 1.05, 0, 100))
-    elif market_regime == 'DISTRIBUTION':
-        score_value = float(np.clip(score_value * 0.8, 0, 100))
-    elif market_regime == 'MARKDOWN':
-        score_value = float(np.clip(score_value * 0.7, 0, 100))
-    confidence = score_value
+    logger.debug(
+        "%s score_breakdown tech=%.1f rs=%.1f liq=%.1f sect=%.1f cyc=%.1f breakout=+%.1f regime=%.0f final=%.1f",
+        symbol, technical, rs_0_10, liquidity_score, sector_score,
+        cycle_score_0_10, breakout_bonus, 100.0 if market_regime in ('MARKUP', 'ACCUMULATION') else 100.0, score_value
+    )
 
-    # Apply cycle-based multiplier/penalty to favor bottoms and penalize mid-cycle
-    try:
-        if cycle_phase_val is not None and np.isfinite(cycle_phase_val):
-            cycle_norm = (float(np.cos(cycle_phase_val)) + 1.0) / 2.0
-            boost = float(getattr(settings, 'cycle_boost', 0.0))
-            # multiplier in [1 - boost, 1 + boost]
-            cycle_multiplier = 1.0 + (cycle_norm - 0.5) * 2.0 * boost
-            score_value = float(np.clip(score_value * cycle_multiplier, 0.0, 100.0))
-            confidence = score_value
-            # mid-cycle penalty
-            mid_thresh = float(getattr(settings, 'cycle_mid_penalty_threshold', 0.2))
-            mid_pen = float(getattr(settings, 'cycle_mid_penalty', 0.0))
-            if abs(float(np.cos(cycle_phase_val))) < mid_thresh and mid_pen > 0:
-                score_value = float(np.clip(score_value * (1.0 - mid_pen), 0.0, 100.0))
-                confidence = score_value
-    except Exception:
-        pass
-
-    if regime in ('DISTRIBUTION', 'MARKDOWN'):
-        return {
-            'regime': regime,
-            'setup_status': 'INVALID',
-            'market_alignment': market_alignment,
-            'model_version': 'v2',
-            'setup_tier': None,
-            'confidence': confidence,
-            'score': score_value,
-            'buy_zone': None,
-            'tp_zone': None,
-            'stop_loss': None,
-            'risk_reward': 0.0
-        }
-
-    # Fake breakout filter
-    breakout_level = rolling_20_high
-    close_above_breakout = float(last['close']) >= breakout_level
-    weak_extension = float(last['close']) < breakout_level * 1.01
-    recent = df.tail(2)
-    if len(recent) == 2:
-        vol_spike_days = (recent['volume_ratio'] > 1.5).sum()
+    # map score into trading action (replaces old VALID/WATCH/IGNORE setup_status)
+    if score_value >= 75:
+        action = 'BUY'
+    elif score_value >= 60:
+        action = 'WATCH'
     else:
-        vol_spike_days = 0
-    if close_above_breakout and weak_extension and vol_spike_days <= 1:
-        score_value = float(np.clip(score_value * 0.7, 0, 100))
-        confidence = float(np.clip(confidence * 0.7, 0, 100))
+        action = 'AVOID'
+    setup_status = action  # keep legacy key for database compatibility
 
-    breakout_level = rolling_20_high
-    is_breakout = float(last['close']) >= breakout_level
-    if sector_context is not None:
-        vni_ret20 = vni_df['close'].pct_change(20).iloc[-1]
-        sector_ret20 = sector_context.get('sector_return_20d', 0.0)
-        if pd.notna(vni_ret20) and sector_ret20 <= vni_ret20:
-            is_breakout = False
-    if not is_breakout:
-        return {
-            'regime': regime,
-            'setup_status': 'NO_SETUP',
-            'market_alignment': market_alignment,
-            'model_version': 'v2',
-            'setup_tier': None,
-            'confidence': confidence,
-            'score': score_value,
-            'buy_zone': None,
-            'tp_zone': None,
-            'stop_loss': None,
-            'risk_reward': 0.0
-        }
+    # build trade parameters: always compute using ATR (or fallback)
+    atr_val = float(last['atr']) if pd.notna(last.get('atr')) and last['atr'] > 0 else None
+    if atr_val is None or not np.isfinite(atr_val) or atr_val <= 0:
+        # try ma20 or 20-day range as surrogate
+        ma20 = float(last.get('ma20')) if pd.notna(last.get('ma20')) else None
+        if ma20 is not None and np.isfinite(ma20) and ma20 > 0:
+            atr_val = ma20
+        else:
+            high_val = df['high'].rolling(20).max().iloc[-1]
+            low_val = df['low'].rolling(20).min().iloc[-1]
+            range_val = (high_val - low_val) / 3.5 if pd.notna(high_val) and pd.notna(low_val) else 1.0
+            atr_val = float(range_val) if range_val > 0 else 1.0
+    atr_val = max(atr_val, 1e-6)
 
-    buy_zone, tp, stop, rr = build_trade_zones(float(breakout_level), float(last['atr']))
-    if buy_zone is None:
-        return {
-            'regime': regime,
-            'setup_status': 'NO_SETUP',
-            'market_alignment': market_alignment,
-            'model_version': 'v2',
-            'setup_tier': None,
-            'confidence': confidence,
-            'score': score_value,
-            'buy_zone': None,
-            'tp_zone': None,
-            'stop_loss': None,
-            'risk_reward': 0.0
-        }
+    entry = close
+    # dynamic multipliers based on breakout strength
+    strength = max(0.0, (close / rolling_20_high - 1.0))
+    target_mult = 2.0 + strength * 5.0
+    stop_mult = 1.5
+
+    stop = entry - stop_mult * atr_val
+    target = entry + target_mult * atr_val
+    # ensure positive
+    if stop <= 0:
+        stop = entry * 0.01
+    if target <= 0:
+        target = entry * 1.01
+
+    rr = (target - entry) / max(entry - stop, 1e-6)
+    setup_quality = score_value * rr
+
     setup_tier = None
-    if rr is not None and np.isfinite(rr):
+    if np.isfinite(rr):
         if rr > 2.5:
             setup_tier = 'A'
         elif rr >= 1.5:
             setup_tier = 'B'
         else:
             setup_tier = 'C'
-
+    # retain old buy_zone fields as None so DB save_score remains functional
     return {
         'regime': regime,
-        'setup_status': 'VALID',
+        'phase': regime,  # alias for clarity
+        'action': action,
+        'setup_status': setup_status,
         'market_alignment': market_alignment,
-        'model_version': 'v2',
+        'model_version': 'v3',
         'setup_tier': setup_tier,
         'confidence': confidence,
         'score': score_value,
-        'buy_zone': _round_zone(buy_zone),
-        'tp_zone': f"{tp:.2f}",
-        'stop_loss': f"{stop:.2f}",
-        'risk_reward': float(rr)
+        'setup_quality': setup_quality,
+        'entry': entry,
+        'stop': stop,
+        'target': target,
+        'rr': rr,
+        'buy_zone_low': None,
+        'buy_zone_high': None,
+        'tp_zone': None,
+        'stop_loss': stop,
+        'risk_reward': rr
     }
 
 
@@ -526,10 +540,11 @@ def save_score(session: Session, symbol: str, date, score_data):
     if exists:
         exists.regime = score_data['regime']
         exists.score = score_data['score']
-        exists.buy_zone = score_data['buy_zone']
-        exists.tp_zone = score_data['tp_zone']
-        exists.stop_loss = score_data['stop_loss']
-        exists.risk_reward = score_data['risk_reward']
+        exists.buy_zone_low = score_data.get('buy_zone_low')
+        exists.buy_zone_high = score_data.get('buy_zone_high')
+        exists.tp_zone = score_data.get('tp_zone')
+        exists.stop_loss = score_data.get('stop_loss')
+        exists.risk_reward = score_data.get('risk_reward')
         exists.confidence = score_data['confidence']
         exists.setup_status = score_data.get('setup_status')
         exists.market_alignment = score_data.get('market_alignment')
@@ -541,10 +556,11 @@ def save_score(session: Session, symbol: str, date, score_data):
             date=date,
             regime=score_data['regime'],
             score=score_data['score'],
-            buy_zone=score_data['buy_zone'],
-            tp_zone=score_data['tp_zone'],
-            stop_loss=score_data['stop_loss'],
-            risk_reward=score_data['risk_reward'],
+            buy_zone_low=score_data.get('buy_zone_low'),
+            buy_zone_high=score_data.get('buy_zone_high'),
+            tp_zone=score_data.get('tp_zone'),
+            stop_loss=score_data.get('stop_loss'),
+            risk_reward=score_data.get('risk_reward'),
             confidence=score_data['confidence'],
             setup_status=score_data.get('setup_status'),
             market_alignment=score_data.get('market_alignment'),

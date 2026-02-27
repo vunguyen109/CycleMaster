@@ -35,14 +35,16 @@ Table: stock_features
 Table: stock_scores
 - stock_id
 - date
-- regime
+- regime  # also aliased as phase in some outputs
 - score
-- buy_zone
-- tp_zone
+- tp_zone  # legacy, may be unused
 - risk_reward
 - stop_loss
 - confidence
-- setup_status
+- setup_status  # now contains action (BUY/WATCH/AVOID)
 - market_alignment
 - model_version
 - setup_tier
+
+# note: entry/target/rr/setup_quality are not stored in the current schema;
+# they are computed on demand from close prices and stored risk_reward/stop_loss.

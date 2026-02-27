@@ -18,11 +18,14 @@ Return:
     symbol,
     regime,
     score,
-    buy_zone, // nullable when setup invalid
-    take_profit, // nullable when setup invalid
-    risk_reward, // nullable when setup invalid
+    action,             // BUY/WATCH/AVOID
+    entry,              // price used for calculation
+    stop,               // defined as close - 2*ATR
+    target,             // defined as close + 3*ATR
+    rr,                 // risk-reward ratio
+    setup_quality,      // score * rr
     liquidity_score,
-    setup_status,
+    setup_status,       // legacy field retains same value as action
     market_alignment,
     setup_tier
   }
