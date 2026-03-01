@@ -18,10 +18,10 @@ __pycache__/
 venv/
 
 ### Backend data
-data/
-*.db
-*.sqlite
-*.sqlite3
+#  data/
+#  *.db
+# *.sqlite
+# *.sqlite3
 
 ### Node/Vite
 node_modules/

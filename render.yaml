@@ -2,7 +2,7 @@ services:
   - type: web
     name: cyclemaster-api
     runtime: python
-    pythonVersion: 3.12
+    pythonVersion: 3.11
     plan: standard
     numInstances: 1
     

@@ -6,5 +6,6 @@ from app.utils.config import settings
 def start_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(run_daily_scan, 'cron', hour=settings.schedule_hour, minute=settings.schedule_minute)
-    scheduler.start()
+    if os.getenv("ENV") == "production":
+        scheduler.start()
     return scheduler
