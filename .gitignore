@@ -16,14 +16,12 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
-backend/.venv/
-backend/venv/
 
 ### Backend data
-backend/data/
-backend/*.db
-backend/*.sqlite
-backend/*.sqlite3
+data/
+*.db
+*.sqlite
+*.sqlite3
 
 ### Node/Vite
 node_modules/
