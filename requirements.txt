@@ -1,12 +1,10 @@
 fastapi==0.110.3
 uvicorn[standard]==0.30.6
-SQLAlchemy==2.0.30
 pydantic==2.7.4
 pydantic-settings==2.3.4
-python-dotenv==1.0.1
 APScheduler==3.10.4
 pandas==2.2.2
-numpy==1.27.9
+numpy==1.26.4
 hmmlearn==0.3.2
 scikit-learn==1.5.1
 pytest==8.2.2
@@ -15,4 +13,7 @@ vnstock==3.4.2
 scipy==1.11.2
 httpx
 gunicorn==22.0.0
+sqlalchemy
+aiosqlite
+python-dotenv
 
