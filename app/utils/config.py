@@ -1,9 +1,12 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
 
 
 class Settings(BaseSettings):
     app_name: str = 'CycleMaster'
-    database_url: str = 'sqlite:///./data/cyclemaster.db'
+    # Support DB_PATH from environment, default to /data/cyclemaster.db (Render-compatible)
+    db_path: str = os.getenv('DB_PATH', '/data/cyclemaster.db')
+    database_url: str = f'sqlite:///{db_path}'
     data_provider: str = 'mock'
     ssi_auth_token: str = ''
     ssi_device_id: str = ''
