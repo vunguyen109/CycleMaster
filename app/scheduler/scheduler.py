@@ -1,3 +1,5 @@
+import os
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.pipeline.scan_pipeline import run_daily_scan
 from app.utils.config import settings

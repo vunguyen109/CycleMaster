@@ -8,6 +8,21 @@ def _safe_to_1d_array(series: pd.Series) -> np.ndarray:
     return np.asarray(series.astype(float).values)
 
 
+def _smooth_phase_sma3(phase_arr: np.ndarray) -> np.ndarray:
+    """Causal 3-bar smoothing for phase to reduce right-edge flicker."""
+    phase = np.asarray(phase_arr, dtype=float).copy()
+    valid = np.isfinite(phase)
+    if not np.any(valid):
+        return phase
+    sin_s = pd.Series(np.sin(phase))
+    cos_s = pd.Series(np.cos(phase))
+    sin_sm = sin_s.rolling(window=3, min_periods=1).mean().to_numpy()
+    cos_sm = cos_s.rolling(window=3, min_periods=1).mean().to_numpy()
+    smoothed = np.arctan2(sin_sm, cos_sm)
+    smoothed[~valid] = np.nan
+    return smoothed
+
+
 def compute_cycle_dataframe(
     prices: pd.Series,
     window: int = 120,
@@ -92,6 +107,7 @@ def compute_cycle_dataframe(
     out_indices = np.arange(win - 1, win - 1 + m)
     phase_out[out_indices] = np.where(valid, inst_phase, np.nan)
     amp_out[out_indices] = np.where(valid, inst_amp, np.nan)
+    phase_out = _smooth_phase_sma3(phase_out)
 
     pos = (phase_out + np.pi) / (2 * np.pi)
     pos_out[:] = pos
@@ -152,6 +168,26 @@ def classify_cycle_phase(phase: float | np.ndarray) -> np.ndarray:
     if scalar:
         return out.item()
     return out
+
+
+def map_phase_to_regime(
+    phase_rad: float,
+    amp_rel: float = 0.0,
+    rs_score: float = 0.0,
+    va_score: float = 0.0,
+    breadth20_pct: float = 100.0,
+    breadth50_pct: float = 100.0
+) -> str:
+    deg = float(np.degrees(phase_rad))
+    if -90.0 <= deg < 0.0:
+        if amp_rel > 0.8 and rs_score > 0 and va_score > 0 and breadth20_pct >= 40 and breadth50_pct >= 30:
+            return 'ACCUMULATION_STRONG'
+        return 'ACCUMULATION_WEAK'
+    if 0.0 <= deg < 90.0:
+        return 'MARKUP'
+    if 90.0 <= deg <= 180.0:
+        return 'DISTRIBUTION'
+    return 'MARKDOWN'
 
 
 def compute_cycle_for_series(series: pd.Series, window: int = 120, detrend_ma: int = 50, min_points: int = 30, compute_dominant_period: bool = False):
