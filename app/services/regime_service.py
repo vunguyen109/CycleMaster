@@ -29,6 +29,19 @@ def detect_market_regime(session: Session, vnindex_df: pd.DataFrame):
             regime = 'NEUTRAL'
 
     latest_date = df['date'].iloc[-1].date()
-    session.add(models.MarketRegime(date=latest_date, regime=regime, confidence=confidence))
+    existing_rows = (
+        session.query(models.MarketRegime)
+        .filter(models.MarketRegime.date == latest_date)
+        .order_by(models.MarketRegime.id.asc())
+        .all()
+    )
+    if existing_rows:
+        keeper = existing_rows[0]
+        keeper.regime = regime
+        keeper.confidence = confidence
+        for extra in existing_rows[1:]:
+            session.delete(extra)
+    else:
+        session.add(models.MarketRegime(date=latest_date, regime=regime, confidence=confidence))
     session.commit()
     return regime, confidence, latest_date

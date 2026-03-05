@@ -13,6 +13,7 @@ from app.utils.config import settings
 
 
 router = APIRouter()
+PRICE_SCALE = 1000.0
 
 
 def get_session():
@@ -52,17 +53,16 @@ def market_regime():
         session.close()
 
 
-@router.get('/stocks/top', response_model=list[StockTopOut])
 def _compute_trade_params(session, symbol, last_close, feature=None):
-    # always return entry/stop/target/rr using current formula (ignore stored values)
+    # Return trade plan with current engine defaults (stop=1.5*ATR, target=3*ATR).
     if last_close is None or last_close <= 0:
         return None, None, None, None
     # ATR fallback logic
     atr_val = None
     if feature and getattr(feature, 'atr', None) and feature.atr > 0:
-        atr_val = float(feature.atr)
+        atr_val = float(feature.atr) * PRICE_SCALE
     elif feature and getattr(feature, 'ma20', None) and feature.ma20 > 0:
-        atr_val = float(feature.ma20)
+        atr_val = float(feature.ma20) * PRICE_SCALE
     else:
         # compute 20-day range from OHLCV
         highs = session.query(models.OHLCV.high).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).limit(20).all()
@@ -75,20 +75,15 @@ def _compute_trade_params(session, symbol, last_close, feature=None):
                 low_val = min(low_vals)
                 range_val = (high_val - low_val) / 3.5 if high_val > low_val else high_val * 0.03
                 atr_val = float(range_val) if range_val > 0 else 1.0
+                atr_val *= PRICE_SCALE
     atr_val = max(atr_val or 0.0, 1e-6)
     entry = last_close
-    # strength based on 20-high, try to compute
-    rolling_high = None
-    highs = session.query(models.OHLCV.high).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).limit(20).all()
-    if highs:
-        vals = [h[0] for h in highs if h[0] is not None]
-        if vals:
-            rolling_high = max(vals)
-    strength = max(0.0, (entry / rolling_high - 1.0)) if rolling_high and rolling_high > 0 else 0.0
-    target_mult = 2.0 + strength * 5.0
-    stop_mult = 1.5
-    stop = entry - stop_mult * atr_val
-    target = entry + target_mult * atr_val
+    if feature and getattr(feature, 'ma20', None) and feature.ma20 > 0:
+        ma20_scaled = float(feature.ma20) * PRICE_SCALE
+        if abs(last_close / ma20_scaled - 1.0) <= 0.01:
+            entry = ma20_scaled
+    stop = entry - 1.5 * atr_val
+    target = entry + 3.0 * atr_val
     if stop <= 0:
         stop = entry * 0.01
     if target <= 0:
@@ -96,6 +91,7 @@ def _compute_trade_params(session, symbol, last_close, feature=None):
     rr = (target - entry) / max(entry - stop, 1e-6)
     return entry, stop, target, rr
 
+@router.get('/stocks/top', response_model=list[StockTopOut])
 def top_stocks():
     ensure_latest_data()
     session = get_session()
@@ -104,7 +100,7 @@ def top_stocks():
             text(
                 """
                 SELECT s.symbol, s.sector, sc.score, sc.regime, sc.buy_zone_low, sc.buy_zone_high, sc.tp_zone, sc.stop_loss,
-                       sc.risk_reward, sc.setup_status, sc.market_alignment, sc.setup_tier
+                       sc.risk_reward, sc.setup_status, sc.market_alignment, sc.trade_signal, sc.sector_score, sc.setup_tier, sc.model_version
                 FROM stock_scores sc
                 JOIN stocks s ON s.id = sc.stock_id
                 WHERE sc.date = (SELECT MAX(date) FROM stock_scores)
@@ -151,7 +147,7 @@ def top_stocks():
         results = []
         window = max(settings.top_sector_window, settings.top_n)
         for r in candidates:
-            symbol, sector, score, regime, buy_zone_low, buy_zone_high, tp_zone, stop_loss, rr, setup_status, market_alignment, setup_tier = r
+            symbol, sector, score, regime, buy_zone_low, buy_zone_high, tp_zone, stop_loss, rr, setup_status, market_alignment, trade_signal, sector_score, setup_tier, model_version = r
             sector_key = sector or 'UNKNOWN'
             if len(results) < window:
                 if sector_counts.get(sector_key, 0) >= settings.top_sector_cap:
@@ -160,9 +156,11 @@ def top_stocks():
                 stock_id=session.query(models.Stock.id).filter_by(symbol=symbol).scalar()
             ).order_by(models.StockFeatures.date.desc()).first()
             ohlcv = session.query(models.OHLCV).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).first()
-            last_close = float(ohlcv.close) * 1000.0 if ohlcv else None
-            # compute fresh trade params regardless of stored values
-            entry_val, stop_val, target_val, rr_val = _compute_trade_params(session, symbol, last_close, feature)
+            last_close = float(ohlcv.close) * PRICE_SCALE if ohlcv else None
+            if setup_status in ('INVALID_PHASE', 'LOW_LIQUIDITY', 'DATA_ERROR', 'RR_REJECTED', 'NO_TRADE_PLAN'):
+                entry_val, stop_val, target_val, rr_val = (last_close, None, None, None)
+            else:
+                entry_val, stop_val, target_val, rr_val = _compute_trade_params(session, symbol, last_close, feature)
             setup_quality_val = (float(score) * rr_val) if (rr_val is not None and score is not None) else None
             results.append(StockTopOut(
                 symbol=symbol,
@@ -183,7 +181,10 @@ def top_stocks():
                 liquidity_score=float(feature.liquidity_score) if feature and feature.liquidity_score is not None else None,
                 setup_status=setup_status,
                 market_alignment=market_alignment,
-                setup_tier=setup_tier
+                trade_signal=trade_signal,
+                sector_score=float(sector_score) if sector_score is not None else None,
+                setup_tier=setup_tier,
+                model_version=model_version
             ))
             sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
             if len(results) >= settings.top_n:
@@ -219,7 +220,10 @@ def analysis_latest():
                        sc.risk_reward,
                        sc.setup_status,
                        sc.market_alignment,
-                       sc.setup_tier
+                       sc.trade_signal,
+                       sc.sector_score,
+                       sc.setup_tier,
+                       sc.model_version
                 FROM stock_scores sc
                 JOIN stocks s ON s.id = sc.stock_id
                 WHERE sc.date = (SELECT MAX(date) FROM stock_scores)
@@ -229,14 +233,17 @@ def analysis_latest():
 
         results: list[StockTopOut] = []
         for r in rows:
-            symbol, regime, score, buy_zone_low, buy_zone_high, tp_zone, stop_loss, rr, setup_status, market_alignment, setup_tier = r
+            symbol, regime, score, buy_zone_low, buy_zone_high, tp_zone, stop_loss, rr, setup_status, market_alignment, trade_signal, sector_score, setup_tier, model_version = r
             # enrich with last close and liquidity score similar to top_stocks
             feature = session.query(models.StockFeatures).filter_by(
                 stock_id=session.query(models.Stock.id).filter_by(symbol=symbol).scalar()
             ).order_by(models.StockFeatures.date.desc()).first()
             ohlcv = session.query(models.OHLCV).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).first()
-            last_close = float(ohlcv.close) * 1000.0 if ohlcv else None
-            entry_val, stop_val, target_val, rr_val = _compute_trade_params(session, symbol, last_close, feature)
+            last_close = float(ohlcv.close) * PRICE_SCALE if ohlcv else None
+            if setup_status in ('INVALID_PHASE', 'LOW_LIQUIDITY', 'DATA_ERROR', 'RR_REJECTED', 'NO_TRADE_PLAN'):
+                entry_val, stop_val, target_val, rr_val = (last_close, None, None, None)
+            else:
+                entry_val, stop_val, target_val, rr_val = _compute_trade_params(session, symbol, last_close, feature)
             setup_quality_val = (float(score) * rr_val) if (rr_val is not None and score is not None) else None
             results.append(StockTopOut(
                 symbol=symbol,
@@ -257,7 +264,10 @@ def analysis_latest():
                 liquidity_score=float(feature.liquidity_score) if feature and feature.liquidity_score is not None else None,
                 setup_status=setup_status,
                 market_alignment=market_alignment,
-                setup_tier=setup_tier
+                trade_signal=trade_signal,
+                sector_score=float(sector_score) if sector_score is not None else None,
+                setup_tier=setup_tier,
+                model_version=model_version
             ))
         return results
     finally:
@@ -276,12 +286,12 @@ def stock_detail(symbol: str):
         score = session.query(models.StockScore).filter_by(stock_id=stock.id).order_by(models.StockScore.date.desc()).first()
         if not feature or not score:
             raise HTTPException(status_code=404, detail='No data for symbol')
-        entry_val = last_close
-        stop_val = score.stop_loss
-        rr_val = score.risk_reward
-        target_val = None
-        if entry_val is not None and stop_val is not None and rr_val is not None:
-            target_val = entry_val + rr_val * (entry_val - stop_val)
+        ohlcv = session.query(models.OHLCV).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).first()
+        last_close = float(ohlcv.close) * PRICE_SCALE if ohlcv else None
+        if score.setup_status in ('INVALID_PHASE', 'LOW_LIQUIDITY', 'DATA_ERROR', 'RR_REJECTED', 'NO_TRADE_PLAN'):
+            entry_val, stop_val, target_val, rr_val = (last_close, None, None, None)
+        else:
+            entry_val, stop_val, target_val, rr_val = _compute_trade_params(session, symbol, last_close, feature)
         setup_quality_val = score.score * rr_val if rr_val is not None else None
         return StockDetailOut(
             symbol=symbol,
@@ -294,15 +304,23 @@ def stock_detail(symbol: str):
                 'ma20': feature.ma20,
                 'ma50': feature.ma50,
                 'ma100': feature.ma100,
+                'ma200': getattr(feature, 'ma200', None),
+                'ma20_slope': getattr(feature, 'ma20_slope', None),
+                'ma50_slope': getattr(feature, 'ma50_slope', None),
+                'ma100_slope': getattr(feature, 'ma100_slope', None),
+                'ma200_slope': getattr(feature, 'ma200_slope', None),
                 'avg_volume_20': feature.avg_volume_20,
                 'avg_value_20': feature.avg_value_20,
+                'volume_trend_5': getattr(feature, 'volume_trend_5', None),
+                'atr_percent': getattr(feature, 'atr_percent', None),
                 'liquidity_score': feature.liquidity_score,
                 'liquidity_percentile_rank': feature.liquidity_percentile_rank,
                 'rs_score': feature.rs_score,
                 'sector_return_20d': feature.sector_return_20d,
                 'sector_rs_vs_index': feature.sector_rs_vs_index,
                 'sector_volume_momentum': feature.sector_volume_momentum,
-                'sector_breadth_pct': feature.sector_breadth_pct
+                'sector_breadth_pct': feature.sector_breadth_pct,
+                'sector_score': getattr(feature, 'sector_score', None)
             },
             regime=score.regime,
             score=score.score,
@@ -315,7 +333,10 @@ def stock_detail(symbol: str):
                 'setup_quality': setup_quality_val,
                 'confidence': score.confidence,
                 'market_alignment': score.market_alignment,
-                'setup_tier': score.setup_tier
+                'trade_signal': getattr(score, 'trade_signal', None),
+                'sector_score': getattr(score, 'sector_score', None),
+                'setup_tier': score.setup_tier,
+                'model_version': score.model_version
             }
         )
     finally:
@@ -373,14 +394,19 @@ def portfolio():
                     take_profit = score.tp_zone
                     if score.regime == 'MARKDOWN':
                         warning = 'Holding moved to MARKDOWN'
+                    elif score.setup_status == 'LOW_LIQUIDITY':
+                        warning = 'Holding is LOW_LIQUIDITY'
                 ohlcv = session.query(models.OHLCV).filter_by(symbol=item.symbol).order_by(models.OHLCV.date.desc()).first()
                 if ohlcv:
                     # OHLCV.close stored in thousands; convert to full price
-                    last_close = float(ohlcv.close) * 1000.0
+                    last_close = float(ohlcv.close) * PRICE_SCALE
                     last_close_date = ohlcv.date
                     pnl_vnd = (last_close - float(item.avg_price)) * float(item.quantity)
-                    # compute trade params fresh using full price
-                    entry, stop, target, rr_val = _compute_trade_params(session, item.symbol, last_close, stock and session.query(models.StockFeatures).filter_by(stock_id=stock.id).order_by(models.StockFeatures.date.desc()).first())
+                    if score and score.setup_status in ('INVALID_PHASE', 'LOW_LIQUIDITY', 'DATA_ERROR', 'RR_REJECTED', 'NO_TRADE_PLAN'):
+                        entry, stop, target, rr_val = (last_close, None, None, None)
+                    else:
+                        # compute trade params fresh using full price
+                        entry, stop, target, rr_val = _compute_trade_params(session, item.symbol, last_close, stock and session.query(models.StockFeatures).filter_by(stock_id=stock.id).order_by(models.StockFeatures.date.desc()).first())
             output.append(PortfolioItemOut(
                 symbol=item.symbol,
                 quantity=item.quantity,
@@ -444,7 +470,7 @@ def add_portfolio(payload: PortfolioUpsertIn):
                     warning = 'Holding moved to MARKDOWN'
             ohlcv = session.query(models.OHLCV).filter_by(symbol=symbol).order_by(models.OHLCV.date.desc()).first()
             if ohlcv:
-                last_close = float(ohlcv.close)
+                last_close = float(ohlcv.close) * PRICE_SCALE
                 last_close_date = ohlcv.date
                 pnl_vnd = (last_close - float(item.avg_price)) * float(item.quantity)
 
@@ -505,7 +531,7 @@ def update_portfolio(symbol: str, payload: PortfolioUpsertIn):
                     warning = 'Holding moved to MARKDOWN'
             ohlcv = session.query(models.OHLCV).filter_by(symbol=item.symbol).order_by(models.OHLCV.date.desc()).first()
             if ohlcv:
-                last_close = float(ohlcv.close)
+                last_close = float(ohlcv.close) * PRICE_SCALE
                 last_close_date = ohlcv.date
                 pnl_vnd = (last_close - float(item.avg_price)) * float(item.quantity)
 

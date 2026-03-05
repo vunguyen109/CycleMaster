@@ -179,6 +179,19 @@ def map_phase_to_regime(
     breadth50_pct: float = 100.0
 ) -> str:
     deg = float(np.degrees(phase_rad))
+    # Normalize and snap boundary values to avoid floating-point flicker:
+    # e.g. -90.00000000000004 should be treated as -90.0.
+    deg = ((deg + 180.0) % 360.0) - 180.0
+    eps = 1e-3
+    if abs(deg + 90.0) <= eps:
+        deg = -90.0
+    elif abs(deg) <= eps:
+        deg = 0.0
+    elif abs(deg - 90.0) <= eps:
+        deg = 90.0
+    elif abs(abs(deg) - 180.0) <= eps:
+        deg = 180.0 if deg >= 0 else -180.0
+
     if -90.0 <= deg < 0.0:
         if amp_rel > 0.8 and rs_score > 0 and va_score > 0 and breadth20_pct >= 40 and breadth50_pct >= 30:
             return 'ACCUMULATION_STRONG'
@@ -190,7 +203,7 @@ def map_phase_to_regime(
     return 'MARKDOWN'
 
 
-def compute_cycle_for_series(series: pd.Series, window: int = 120, detrend_ma: int = 50, min_points: int = 30, compute_dominant_period: bool = False):
+def compute_cycle_for_series(series: pd.Series, window: int = 120, detrend_ma: int = 50, min_points: int = 60, compute_dominant_period: bool = False):
     df = compute_cycle_dataframe(series, window=window, detrend_ma=detrend_ma, min_periods=min_points, compute_dominant_period=compute_dominant_period)
     if df.empty:
         return {'cycle_phase': float('nan'), 'cycle_amplitude': float('nan'), 'dominant_period': float('nan')}

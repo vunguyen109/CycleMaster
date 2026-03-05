@@ -33,7 +33,10 @@ class StockTopOut(BaseModel):
     liquidity_score: Optional[float] = None
     setup_status: Optional[str] = None
     market_alignment: Optional[str] = None
+    trade_signal: Optional[str] = None
+    sector_score: Optional[float] = None
     setup_tier: Optional[str] = None
+    model_version: Optional[str] = None
 
 
 class StockDetailOut(BaseModel):

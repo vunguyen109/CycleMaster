@@ -5,6 +5,7 @@ from sqlalchemy import text
 from app.models import models
 from app.models.db import SessionLocal
 from app.services import data_service, feature_service, regime_service, scoring_service
+from app.services import sector_service
 from app.services import liquidity_service, validation_service
 from app.utils.config import settings
 
@@ -18,6 +19,7 @@ def run_daily_scan():
         logger.info('Scan started')
         lookback = max(getattr(settings, 'lookback_min', 150), 150)
         logger.info(f'Config: data_provider={settings.data_provider} lookback_min={lookback} db={settings.database_url}')
+        logger.info('Stage 0: Universe Load')
         symbols = data_service.get_symbols(session)
         if not symbols:
             logger.warning('No symbols in universe. Scan aborted.')
@@ -40,7 +42,7 @@ def run_daily_scan():
         else:
             logger.warning('VNINDEX empty after fetch')
 
-        # Step 0: Data validation
+        # Stage 1: Data Validation
         validated = {}
         invalid = {}
         min_sessions = 120
@@ -64,25 +66,25 @@ def run_daily_scan():
         if missing_sector:
             logger.warning(f'Missing sector noted {len(missing_sector)} symbols: {", ".join(sorted(missing_sector))}')
 
-        # Step 1: Liquidity computation & ranking
+        # Stage 2: Liquidity Computation
         liquidity_by_symbol = {}
         for symbol, df in validated.items():
             liquidity_by_symbol[symbol] = liquidity_service.compute_liquidity_metrics(df)
         liquidity_service.rank_liquidity(liquidity_by_symbol)
 
-        # Step 2: Liquidity filtering is disabled for trading signals.
-        # we still compute liquidity metrics for informational purposes but every
-        # validated symbol will be evaluated regardless of value/volume.
+        # Stage 3: Liquidity Filtering
         scan_symbols = list(validated.keys())
         if not scan_symbols:
             logger.warning('No symbols to scan after validation')
-        # log any that fail the traditional thresholds but do not exclude them
+        low_liquidity_count = 0
         for symbol, metrics in liquidity_by_symbol.items():
-            if metrics.get('avg_value_20') is not None and metrics.get('avg_value_20') < settings.liquidity_min_scan_value:
+            if metrics.get('avg_value_20') is not None and metrics.get('avg_value_20') < settings.liquidity_min_avg_value:
+                low_liquidity_count += 1
                 logger.info(f'Liquidity below scan threshold but will still be scored: {symbol}')
+        logger.info(f'Liquidity filter count (avg_value_20 < {settings.liquidity_min_avg_value:.0f}): {low_liquidity_count}')
         tradable_symbols = scan_symbols
 
-        # Step 3: Feature calculation
+        # Stage 4: Feature Engineering
         breadth20_hits = 0
         breadth50_hits = 0
         breadth_total = 0
@@ -108,7 +110,7 @@ def run_daily_scan():
         if insufficient:
             logger.warning(f'Insufficient lookback symbols: {", ".join(sorted(insufficient))}')
 
-        # Step 4: Market regime detection
+        # Stage 5: Market Regime Detection
         market_regime, confidence, regime_date = regime_service.detect_market_regime(session, vnindex_df)
         logger.info(f'Market regime: {market_regime} ({confidence:.1f}%) on {regime_date}')
 
@@ -116,66 +118,47 @@ def run_daily_scan():
         breadth50_pct = (breadth50_hits / breadth_total * 100) if breadth_total > 0 else 100.0
         logger.info(f'Market breadth > MA20: {breadth20_pct:.1f}% | > MA50: {breadth50_pct:.1f}%')
 
-        # Step 5: Stock phase detection
-        phase_cache = {}
+        # Stage 6: Sector Strength Detection
+        sector_map = {s.symbol: s.sector for s in session.query(models.Stock).all()}
+        sector_metrics = sector_service.compute_sector_strength(feature_cache, sector_map, vnindex_df)
         for symbol, df in feature_cache.items():
+            metrics = sector_service.get_symbol_sector_context(symbol, sector_map, sector_metrics)
+            df.at[df.index[-1], 'sector_return_20d'] = metrics['sector_return_20d']
+            df.at[df.index[-1], 'sector_rs_vs_index'] = metrics['sector_relative_strength']
+            df.at[df.index[-1], 'sector_volume_momentum'] = metrics['sector_volume_change']
+            df.at[df.index[-1], 'sector_breadth_pct'] = metrics['sector_breadth_pct']
+            df.at[df.index[-1], 'sector_score'] = metrics['sector_score']
+            feature_service.save_features(session, symbol, df)
+
+        # Stage 7: Stock Phase Detection
+        phase_cache = {}
+        latest_scan_date = None
+        for symbol, df in feature_cache.items():
+            if latest_scan_date is None and not df.empty:
+                latest_scan_date = df['date'].iloc[-1].date()
+            prev_phase = None
+            if latest_scan_date is not None:
+                prev_phase_row = (
+                    session.query(models.StockScore.regime)
+                    .join(models.Stock, models.Stock.id == models.StockScore.stock_id)
+                    .filter(models.Stock.symbol == symbol, models.StockScore.date < latest_scan_date)
+                    .order_by(models.StockScore.date.desc())
+                    .first()
+                )
+                prev_phase = prev_phase_row[0] if prev_phase_row else None
             phase_cache[symbol] = scoring_service.detect_stock_phase(
                 df,
                 vnindex_df,
                 breadth20_pct=breadth20_pct,
-                breadth50_pct=breadth50_pct
+                breadth50_pct=breadth50_pct,
+                prev_phase=prev_phase
             )
             df.at[df.index[-1], 'rs_score'] = scoring_service.rs_score_0_10(df, vnindex_df)
             feature_service.save_features(session, symbol, df)
 
-        # Sector momentum
-        sector_map = {s.symbol: s.sector for s in session.query(models.Stock).all()}
-        sector_bucket = {}
-        for symbol, df in feature_cache.items():
-            sector = sector_map.get(symbol) or 'UNKNOWN'
-            ret20 = df['close'].pct_change(20).iloc[-1]
-            vol_ma5 = df['volume'].rolling(5).mean().iloc[-1]
-            vol_ma20 = df['volume'].rolling(20).mean().iloc[-1]
-            vol_mom = (vol_ma5 / vol_ma20 - 1.0) if pd.notna(vol_ma5) and pd.notna(vol_ma20) and vol_ma20 > 0 else 0.0
-            breadth_hit = 1 if pd.notna(df['ma20'].iloc[-1]) and df['close'].iloc[-1] > df['ma20'].iloc[-1] else 0
-            bucket = sector_bucket.setdefault(sector, {'ret20': [], 'vol_mom': [], 'breadth': []})
-            if pd.notna(ret20):
-                bucket['ret20'].append(ret20)
-            if pd.notna(vol_mom):
-                bucket['vol_mom'].append(vol_mom)
-            bucket['breadth'].append(breadth_hit)
-
-        sector_metrics = {}
-        vni_ret20 = vnindex_df['close'].pct_change(20).iloc[-1]
-        for sector, bucket in sector_bucket.items():
-            ret20_avg = float(sum(bucket['ret20']) / max(len(bucket['ret20']), 1)) if bucket['ret20'] else 0.0
-            vol_mom_avg = float(sum(bucket['vol_mom']) / max(len(bucket['vol_mom']), 1)) if bucket['vol_mom'] else 0.0
-            breadth_pct = float(sum(bucket['breadth']) / max(len(bucket['breadth']), 1) * 100)
-            rs_vs_index = float(ret20_avg - vni_ret20) if pd.notna(vni_ret20) else ret20_avg
-            sector_metrics[sector] = {
-                'sector_return_20d': ret20_avg,
-                'sector_rs_vs_index': rs_vs_index,
-                'sector_volume_momentum': vol_mom_avg,
-                'sector_breadth_pct': breadth_pct
-            }
-
-        for symbol, df in feature_cache.items():
-            sector = sector_map.get(symbol) or 'UNKNOWN'
-            metrics = sector_metrics.get(sector, {
-                'sector_return_20d': 0.0,
-                'sector_rs_vs_index': 0.0,
-                'sector_volume_momentum': 0.0,
-                'sector_breadth_pct': 0.0
-            })
-            df.at[df.index[-1], 'sector_return_20d'] = metrics['sector_return_20d']
-            df.at[df.index[-1], 'sector_rs_vs_index'] = metrics['sector_rs_vs_index']
-            df.at[df.index[-1], 'sector_volume_momentum'] = metrics['sector_volume_momentum']
-            df.at[df.index[-1], 'sector_breadth_pct'] = metrics['sector_breadth_pct']
-            feature_service.save_features(session, symbol, df)
-
-        # Step 6-8: Scoring, signal validation, save
+        # Stage 8-12: Scoring, Signal, Trade plan, Result validation, Save
         regime_counts = {}
-        action_counts = {'BUY': 0, 'WATCH': 0, 'AVOID': 0}
+        signal_counts = {'BUY': 0, 'SETUP': 0, 'WATCH': 0, 'AVOID': 0}
         score_values = []
         for symbol, df in feature_cache.items():
             score = scoring_service.score_stock(
@@ -184,10 +167,11 @@ def run_daily_scan():
                 df,
                 vnindex_df,
                 market_regime,
+                market_confidence=confidence,
                 breadth20_pct=breadth20_pct,
                 breadth50_pct=breadth50_pct,
                 phase_context=phase_cache.get(symbol),
-                sector_context=sector_metrics.get(sector_map.get(symbol) or 'UNKNOWN')
+                sector_context=sector_service.get_symbol_sector_context(symbol, sector_map, sector_metrics)
             )
             ok, reason = scoring_service.validate_signal_output(score)
             if not ok:
@@ -196,10 +180,11 @@ def run_daily_scan():
             scoring_service.save_score(session, symbol, df['date'].iloc[-1].date(), score)
             logger.info(f'Scored {symbol}: regime={score["regime"]} score={score["score"]:.1f} action={score.get("action")}')
             regime_counts[score['regime']] = regime_counts.get(score['regime'], 0) + 1
-            action_counts[score.get('action', 'AVOID')] = action_counts.get(score.get('action', 'AVOID'), 0) + 1
+            sig = score.get('trade_signal') or score.get('action') or 'AVOID'
+            if sig not in signal_counts:
+                signal_counts[sig] = 0
+            signal_counts[sig] += 1
             score_values.append(score['score'])
-            # legacy QC checks removed; entry/stop/target are always produced so no need
-            # check buy_zone or risk_reward negativity anymore
 
         if regime_counts:
             logger.info(f'Regime distribution: {regime_counts}')
@@ -213,7 +198,13 @@ def run_daily_scan():
         if score_values:
             avg_score = sum(score_values) / max(len(score_values), 1)
             logger.info(f'Average score: {avg_score:.2f}')
-        logger.info(f'Action distribution: BUY={action_counts.get("BUY",0)} WATCH={action_counts.get("WATCH",0)} AVOID={action_counts.get("AVOID",0)}')
+            hist, bins = pd.cut(pd.Series(score_values), bins=[0, 20, 40, 60, 80, 100], include_lowest=True).value_counts(sort=False), [0, 20, 40, 60, 80, 100]
+            logger.info(f'Score histogram bins {bins}: {[int(v) for v in hist.values]}')
+        logger.info(
+            f'Signal distribution: BUY={signal_counts.get("BUY",0)} '
+            f'SETUP={signal_counts.get("SETUP",0)} WATCH={signal_counts.get("WATCH",0)} '
+            f'AVOID={signal_counts.get("AVOID",0)}'
+        )
 
 
 
@@ -223,6 +214,7 @@ def run_daily_scan():
                 SELECT s.symbol, sc.score, sc.regime
                 FROM stock_scores sc
                 JOIN stocks s ON s.id = sc.stock_id
+                WHERE sc.date = (SELECT MAX(date) FROM stock_scores)
                 ORDER BY sc.score DESC
                 LIMIT 5
                 """

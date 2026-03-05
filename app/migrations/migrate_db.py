@@ -43,12 +43,33 @@ def migrate_db(db_path: str = './data/cyclemaster.db'):
         if 'dominant_cycle_period' not in columns:
             print("Adding dominant_cycle_period to stock_features...")
             cursor.execute("ALTER TABLE stock_features ADD COLUMN dominant_cycle_period REAL DEFAULT NULL")
+
+        feature_new_cols = {
+            'ma200': "REAL DEFAULT NULL",
+            'ma20_slope': "REAL DEFAULT NULL",
+            'ma50_slope': "REAL DEFAULT NULL",
+            'ma100_slope': "REAL DEFAULT NULL",
+            'ma200_slope': "REAL DEFAULT NULL",
+            'volume_trend_5': "REAL DEFAULT NULL",
+            'atr_percent': "REAL DEFAULT NULL",
+            'sector_score': "REAL DEFAULT NULL",
+        }
+        for col, col_type in feature_new_cols.items():
+            if col not in columns:
+                print(f"Adding {col} to stock_features...")
+                cursor.execute(f"ALTER TABLE stock_features ADD COLUMN {col} {col_type}")
         
         # Check stock_scores columns
         cursor.execute("PRAGMA table_info(stock_scores)")
         score_cols = {row[1]: row[2] for row in cursor.fetchall()}
         
         print(f"Existing stock_scores columns: {sorted(score_cols.keys())}")
+        if 'trade_signal' not in score_cols:
+            print("Adding trade_signal to stock_scores...")
+            cursor.execute("ALTER TABLE stock_scores ADD COLUMN trade_signal TEXT DEFAULT NULL")
+        if 'sector_score' not in score_cols:
+            print("Adding sector_score to stock_scores...")
+            cursor.execute("ALTER TABLE stock_scores ADD COLUMN sector_score REAL DEFAULT NULL")
         
         # Determine if we need to rebuild stock_scores table
         needs_rebuild = False
@@ -86,6 +107,8 @@ def migrate_db(db_path: str = './data/cyclemaster.db'):
                     confidence REAL,
                     setup_status TEXT,
                     market_alignment TEXT,
+                    trade_signal TEXT,
+                    sector_score REAL,
                     model_version TEXT,
                     setup_tier TEXT,
                     UNIQUE(stock_id, date),
@@ -113,7 +136,7 @@ def migrate_db(db_path: str = './data/cyclemaster.db'):
                              ELSE NULL END as buy_zone_high,
                         CAST(COALESCE(tp_zone, 0) AS REAL) as tp_zone,
                         CAST(COALESCE(stop_loss, 0) AS REAL) as stop_loss,
-                        risk_reward, confidence, setup_status, market_alignment, model_version, setup_tier
+                        risk_reward, confidence, setup_status, market_alignment, NULL as trade_signal, NULL as sector_score, model_version, setup_tier
                     FROM stock_scores
                 """)
             else:
@@ -126,7 +149,7 @@ def migrate_db(db_path: str = './data/cyclemaster.db'):
                         NULL as buy_zone_high,
                         CAST(COALESCE(tp_zone, 0) AS REAL) as tp_zone,
                         CAST(COALESCE(stop_loss, 0) AS REAL) as stop_loss,
-                        risk_reward, confidence, setup_status, market_alignment, model_version, setup_tier
+                        risk_reward, confidence, setup_status, market_alignment, NULL as trade_signal, NULL as sector_score, model_version, setup_tier
                     FROM stock_scores
                     WHERE 1=0
                 """)
