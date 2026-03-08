@@ -1,0 +1,113 @@
+2026-03-08 12:39:51,204 | INFO | app.main | Initializing database...
+2026-03-08 12:39:51,228 | INFO | app.main | Database initialized successfully
+2026-03-08 12:39:51,246 | INFO | app.main | Starting scheduler...
+2026-03-08 12:39:51,288 | INFO | apscheduler.scheduler | Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-03-08 12:39:51,289 | INFO | app.main | Scheduler started successfully
+2026-03-08 12:49:19,007 | INFO | app.services.llm_prep_service | Gathering AI insight data for 2026-03-06
+2026-03-08 12:49:20,722 | INFO | app.services.llm_inference | Calling Vertex-Key AI API (Model: pro/gpt-5.2)...
+2026-03-08 12:49:49,266 | INFO | httpx | HTTP Request: POST https://vertex-key.com/api/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-08 12:49:49,332 | INFO | app.services.llm_inference | AI API Response: {
+  "title": "VN-Index giảm sâu, độ rộng suy kiệt: Tin hàng hóa leo thang gây nhiễu, ưu tiên phòng thủ & quản trị rủi ro",
+  "market_snapshot": {
+    "vnindex_close": 1767.84,
+    "vnindex_change_pct": -4.230906746698171,
+    "regime": "ACCUMULATION",
+    "breadth_above_ma20_pct": 20.1,
+    "breadth_above_ma50_pct": 25.6
+  },
+  "key_takeaways": [
+    "Tin tức vĩ mô thiên về “sốc giá” (dầu vượt 90 USD, xăng/gas tăng mạnh, vàng tăng) + bất ổn Trung Đông khiến tâm lý nghiêng “quá bi quan” trong ngắn hạn; tuy nhiên dữ liệu độ rộng rất thấp (20.1% >MA20; 25.6% >MA50) xác nhận áp lực bán là thật, không chỉ là tin nhiễu.",
+    "VN-Index giảm -4.23% nhưng HMM vẫn ở ACCUMULATION: hàm ý thị trường đang ở pha tích lũy sau nhịp rũ mạnh (shakeout) hơn là bước vào downtrend bền; điều kiện cần là phải bảo toàn vốn và chờ tín hiệu cải thiện độ rộng trước khi tăng tỷ trọng.",
+    "Nhóm dẫn dắt theo điểm số vẫn tập trung ở Chemicals (72.8) và Energy (54.2) — phù hợp bối cảnh giá hàng hóa tăng; nhưng cần lọc theo trạng thái SETUP/RS vì độ rộng thị trường đang yếu, rủi ro “hồi kỹ thuật rồi gãy” cao.",
+    "Danh mục hiện tại có 2 mã ở DISTRIBUTION (FPT, VCB) điểm rất thấp ~19: xác suất hồi phục kém hơn thị trường; ưu tiên cắt/giảm để giảm beta, chuyển trọng tâm sang các mã đang SETUP có điểm cao (HT1, POW/EVF/VOS theo hệ thống quét)."
+  ],
+  "leaders_watchlist": [
+    {
+      "sector": "Chemicals",
+      "note": "Điểm ngành cao nhất (72.8) nhưng thị trường yếu; ưu tiên chọn lọc cổ phiếu có RS tốt và SETUP, tránh mua đuổi."
+    },
+    {
+      "sector": "Energy",
+      "note": "Được hỗ trợ bởi tin dầu tăng; chỉ giải ngân thăm dò khi giá giữ nền, đặt kỷ luật stop-loss chặt."
+    },
+    {
+      "sector": "Automotive",
+      "note": "Điểm ngành khá (61) nhưng độ rộng thị trường thấp; theo dõi thêm, không vội tăng tỷ trọng."
+    }
+  ],
+  "action_plan_next_session": [
+    "Kỷ luật rủi ro phiên tới: không bắt đáy diện rộng khi breadth >MA20 còn ~20%; chỉ giải ngân thăm dò (nhỏ) vào các mã SETUP có điểm cao, có sẵn mức cắt lỗ rõ ràng.",
+    "Danh mục - FPT (19.2, DISTRIBUTION): ưu tiên giảm tỷ trọng/cắt nếu không phục hồi nhanh; không trung bình giá khi đang phân phối.",
+    "Danh mục - VCB (19.7, DISTRIBUTION): giảm tỷ trọng/cắt để hạ rủi ro hệ thống; chờ tín hiệu tạo đáy và cải thiện RS rồi mới xem xét lại.",
+    "Danh mục - HPG (41.8, SIDEWAYS): giữ tỷ trọng thấp, chỉ giữ nếu không thủng đáy gần nhất; chưa có lợi thế định lượng để tăng thêm.",
+    "Danh mục - MWG (29.6, ACCUMULATION_WEAK): tiếp tục quan sát, không mua thêm; chỉ nâng tỷ trọng khi điểm/RS cải thiện rõ.",
+    "Danh mục - SSI (50.2, ACCUMULATION_WEAK): giữ/giảm tùy mức chịu rủi ro; chỉ xem xét tăng khi thị trường cải thiện độ rộng (breadth >MA20 quay lại >35-40%).",
+    "Danh mục - HT1 (74.4, SETUP): được phép giữ và canh gia tăng thăm dò khi giá xác nhận giữ nền; tuân thủ stop-loss 16.19.",
+    "Theo dõi các mã quét: ưu tiên POW/EVF/VOS/HT1/PAN; chỉ kích hoạt mua khi có phiên xác nhận (giữ nền + thanh khoản hỗ trợ), tránh mua trong nhịp hoảng loạn."
+  ],
+  "trade_levels": [
+    {
+      "symbol": "VOS",
+      "stop_loss": 14.78,
+      "take_profit_target": 17.74
+    },
+    {
+      "symbol": "EVF",
+      "stop_loss": 12.6,
+      "take_profit_target": 15.12
+    },
+    {
+      "symbol": "HT1",
+      "stop_loss": 16.19,
+      "take_profit_target": 19.43
+    },
+    {
+      "symbol": "POW",
+      "stop_loss": 13.53,
+      "take_profit_target": 16.24
+    },
+    {
+      "symbol": "PAN",
+      "stop_loss": 31.66,
+      "take_profit_target": 37.99
+    },
+    {
+      "symbol": "FPT",
+      "stop_loss": 0.0,
+      "take_profit_target": 0.0
+    },
+    {
+      "symbol": "HPG",
+      "stop_loss": 0.0,
+      "take_profit_target": 0.0
+    },
+    {
+      "symbol": "MWG",
+      "stop_loss": 0.0,
+      "take_profit_target": 0.0
+    },
+    {
+      "symbol": "SSI",
+      "stop_loss": 0.0,
+      "take_profit_target": 0.0
+    },
+    {
+      "symbol": "VCB",
+      "stop_loss": 0.0,
+      "take_profit_target": 0.0
+    }
+  ],
+  "risk_note": "Rủi ro chính: cú sốc hàng hóa (dầu/xăng/gas) và bất ổn Trung Đông có thể kéo lạm phát kỳ vọng tăng, làm chi phí vốn và tâm lý rủi ro xấu đi; trong bối cảnh độ rộng rất thấp, mọi nhịp hồi dễ chỉ là hồi kỹ thuật—bắt buộc đặt stop-loss và hạn chế đòn bẩy."
+}
+2026-03-08 13:04:39,215 | INFO | app.main | Shutting down scheduler...
+2026-03-08 13:04:39,215 | ERROR | app.main | Error during scheduler shutdown: Scheduler is not running
+Traceback (most recent call last):
+  File "D:\project\trading project\CycleMaster\app\main.py", line 67, in on_shutdown
+    scheduler.shutdown()
+  File "D:\project\trading project\CycleMaster\.venv\Lib\site-packages\apscheduler\schedulers\background.py", line 41, in shutdown
+    super(BackgroundScheduler, self).shutdown(*args, **kwargs)
+  File "D:\project\trading project\CycleMaster\.venv\Lib\site-packages\apscheduler\schedulers\blocking.py", line 24, in shutdown
+    super(BlockingScheduler, self).shutdown(wait)
+  File "D:\project\trading project\CycleMaster\.venv\Lib\site-packages\apscheduler\schedulers\base.py", line 199, in shutdown
+    raise SchedulerNotRunningError
+apscheduler.schedulers.SchedulerNotRunningError: Scheduler is not running

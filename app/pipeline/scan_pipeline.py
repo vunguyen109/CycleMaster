@@ -1,12 +1,14 @@
 import logging
 from datetime import date
 import pandas as pd
+import json
 from sqlalchemy import text
 from app.models import models
 from app.models.db import SessionLocal
 from app.services import data_service, feature_service, regime_service, scoring_service
 from app.services import sector_service
 from app.services import liquidity_service, validation_service
+from app.services import llm_prep_service, llm_inference
 from app.utils.config import settings
 
 
@@ -228,6 +230,7 @@ def run_daily_scan():
             'top_symbols': top_symbols,
             'market_regime': market_regime
         }
+
         return summary
     finally:
         session.close()

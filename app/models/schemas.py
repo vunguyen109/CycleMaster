@@ -12,6 +12,14 @@ class MarketRegimeOut(BaseModel):
     confidence_change: Optional[float] = None
 
 
+class DailyAiInsightOut(BaseModel):
+    date: dt_date
+    market_narrative: str
+    sector_insight: str
+    stock_reviews: str
+    daily_newsletter: str
+
+
 class StockTopOut(BaseModel):
     symbol: str
     regime: str

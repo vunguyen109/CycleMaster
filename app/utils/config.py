@@ -52,9 +52,13 @@ class Settings(BaseSettings):
     cycle_sell_threshold: float = 0.75
     cycle_amplitude_min: float = 1e-6
     log_level: str = 'INFO'
+    log_file: str = 'app.log'
     portfolio_symbols: str = ''
     portfolio_quantities: str = ''
     portfolio_avg_price: str = ''
+    # AI Integration
+    vertex_api_key: str = ''
+    ai_model: str = 'pro/gpt-5.2'
 
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 

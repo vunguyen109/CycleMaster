@@ -10,6 +10,10 @@ from app.services.portfolio_service import get_portfolio
 from app.services import data_service
 from app.backtest_engine import run_backtest
 from app.utils.config import settings
+from app.models.schemas import DailyAiInsightOut
+from app.services import llm_prep_service, llm_inference
+import pandas as pd
+import json
 
 
 router = APIRouter()
@@ -594,5 +598,161 @@ def vnindex_series(limit: int = 120):
             symbol='VNINDEX',
             series=[MarketSeriesPoint(date=r.date, close=float(r.close)) for r in series]
         )
+    finally:
+        session.close()
+
+
+@router.get('/ai/insights/latest', response_model=DailyAiInsightOut)
+def ai_insights_latest():
+    """Lấy nhận định AI mới nhất trong ngày"""
+    session = get_session()
+    try:
+        insight = session.query(models.DailyAiInsight).order_by(models.DailyAiInsight.date.desc()).first()
+        if not insight:
+            raise HTTPException(status_code=404, detail="No AI insights available")
+        return DailyAiInsightOut(
+            date=insight.date,
+            market_narrative=insight.market_narrative or "",
+            sector_insight=insight.sector_insight or "",
+            stock_reviews=insight.stock_reviews or "[]",
+            daily_newsletter=insight.daily_newsletter or ""
+        )
+    finally:
+        session.close()
+
+
+@router.post('/ai/insights/generate', response_model=DailyAiInsightOut)
+def ai_insights_generate():
+    """Tạo nhận định AI thủ công"""
+    if not getattr(settings, 'vertex_api_key', None):
+        raise HTTPException(status_code=400, detail="Vertex API Key is not configured")
+        
+    session = get_session()
+    try:
+        target_date_raw = session.execute(text("SELECT MAX(date) FROM stock_scores")).scalar()
+        if not target_date_raw:
+            raise HTTPException(status_code=404, detail="No scan data available")
+        
+        # Ensure target_date is a python date object
+        from datetime import datetime, date
+        if isinstance(target_date_raw, str):
+            target_date = datetime.strptime(target_date_raw, '%Y-%m-%d').date()
+        elif isinstance(target_date_raw, datetime):
+            target_date = target_date_raw.date()
+        else:
+            target_date = target_date_raw
+            
+        regime_row = session.query(models.MarketRegime).filter_by(date=target_date).first()
+        market_regime = regime_row.regime if regime_row else "UNKNOWN"
+        
+        vni_rows = session.query(models.OHLCV).filter_by(symbol='VNINDEX').filter(models.OHLCV.date <= target_date).order_by(models.OHLCV.date.asc()).all()
+        vnindex_df = pd.DataFrame([{"close": float(r.close), "date": r.date} for r in vni_rows])
+        
+        # Calculate approximate breadth
+        total_stocks = session.query(models.Stock).count()
+        
+        above20 = session.execute(
+            text("""
+            SELECT COUNT(1) FROM stock_features f 
+            JOIN ohlcv o ON f.stock_id = (SELECT id FROM stocks WHERE symbol = o.symbol) AND f.date = o.date 
+            WHERE f.date = :d AND o.close > f.ma20
+            """), {"d": target_date}
+        ).scalar()
+        
+        above50 = session.execute(
+            text("""
+            SELECT COUNT(1) FROM stock_features f 
+            JOIN ohlcv o ON f.stock_id = (SELECT id FROM stocks WHERE symbol = o.symbol) AND f.date = o.date 
+            WHERE f.date = :d AND o.close > f.ma50
+            """), {"d": target_date}
+        ).scalar()
+        
+        breadth20_pct = (above20 / max(total_stocks, 1) * 100) if total_stocks else 0
+        breadth50_pct = (above50 / max(total_stocks, 1) * 100) if total_stocks else 0
+        
+        ai_payload = llm_prep_service.gather_daily_ai_data(
+            session=session,
+            target_date=target_date,
+            market_regime=market_regime,
+            vnindex_df=vnindex_df,
+            breadth20_pct=breadth20_pct,
+            breadth50_pct=breadth50_pct
+        )
+        
+        system_prompt = """
+Bạn là một Giám đốc Đầu tư (CIO) chuyên nghiệp tại thị trường chứng khoán Việt Nam. 
+Phân tích dữ liệu định lượng, CÁC TIN TỨC VĨ MÔ/TÀI CHÍNH và DANH MỤC ĐẦU TƯ CÁ NHÂN được cung cấp. Nhiệm vụ của bạn là:
+- Đọc tin tức để nhận biết tâm lý (Sentiment) đang "Quá hưng phấn" hay "Quá bi quan" (Tin nhiễu).
+- Đối chiếu tin tức với dữ liệu định lượng (Điểm số, Độ rộng, Chu kỳ) để xem thị trường đang đi sau hay đi trước tin tức.
+- Phân tích và đưa ra lời khuyên CỤ THỂ CHO CÁC MÃ TRONG DANH MỤC ĐANG NẮM GIỮ (Nên giữ, hay cắt lỗ/chốt lời dựa trên Điểm số và Pha chu kỳ hiện tại).
+- Gộp các mã Tốt nhất (Hệ thống quét) và các mã trong Danh mục vào chung 'trade_levels' để theo dõi.
+- Lọc nhiễu tâm lý để đưa ra nhận định khách quan nhất.
+
+QUY TẮC QUAN TRỌNG:
+1. Sử dụng định dạng **chữ đậm** (Markdown: **text**) cho các từ khóa quan trọng: Tên mã cổ phiếu, Tên ngành, Con số phần trăm/điểm số cụ thể, và các hành động (MUA/BÁN/CẮT LỖ).
+2. Trong 'trade_levels', TUYỆT ĐỐI không trả về giá trị 0.0 cho 'stop_loss' hoặc 'take_profit_target'. 
+   - Nếu cổ phiếu đang ở trạng thái xấu (DISTRIBUTION, MARKDOWN) và cần thoát hàng, hãy ghi giá thoát cụ thể hoặc ghi chú (VD: "Thoát ngay", "Cắt lỗ vùng 15.x").
+   - Nếu không có điểm mua/bán rõ ràng, hãy dự báo vùng hỗ trợ/kháng cự gần nhất.
+3. Thêm trường 'recommendation' cho mỗi mục trong 'trade_levels' (VD: "TOP ALPHA", "CẮT LỖ", "CHỜ MUA", "NẮM GIỮ").
+
+Trả về DUY NHẤT một đối tượng JSON với cấu trúc chính xác như sau:
+{
+  "title": "Tiêu đề bản tin súc tích, chuyên nghiệp",
+  "market_snapshot": {
+    "vnindex_close": 0.0,
+    "vnindex_change_pct": 0.0,
+    "regime": "Chu kỳ thị trường (HMM)",
+    "breadth_above_ma20_pct": 0.0,
+    "breadth_above_ma50_pct": 0.0
+  },
+  "key_takeaways": ["Danh sách 3-4 nhận định quan trọng nhất (Yêu cầu phải liên kết chặt chẽ giữa tin tức và số liệu kỹ thuật)"],
+  "leaders_watchlist": [{"sector": "Tên ngành", "note": "Ghi chú về dòng tiền/sức mạnh"}],
+  "action_plan_next_session": ["Danh sách hành động cụ thể cho phiên tới, bao gồm cả Nhận định về Danh mục đang nắm giữ (Nếu có)"],
+  "trade_levels": [{"symbol": "Mã CP", "recommendation": "Khuyến nghị", "stop_loss": "Giá/vùng dừng lỗ", "take_profit_target": "Giá/vùng mục tiêu"}],
+  "risk_note": "Cảnh báo rủi ro quan trọng nhất hiện tại"
+}
+Lưu ý: Không giải thích thêm, chỉ trả về JSON.
+"""
+        
+        ai_response = llm_inference.call_vertex_key_ai(
+            system_prompt=system_prompt,
+            data_payload=ai_payload
+        )
+        
+        if "error" in ai_response:
+            raise HTTPException(status_code=500, detail=ai_response["error"])
+            
+        full_json_str = json.dumps(ai_response, ensure_ascii=False)
+
+        insight = models.DailyAiInsight(
+            date=target_date,
+            market_narrative=full_json_str,
+            sector_insight="",
+            stock_reviews="",
+            daily_newsletter=""
+        )
+        
+        existing_insight = session.query(models.DailyAiInsight).filter_by(date=target_date).first()
+        if existing_insight:
+            existing_insight.market_narrative = insight.market_narrative
+            existing_insight.sector_insight = insight.sector_insight
+            existing_insight.stock_reviews = insight.stock_reviews
+            existing_insight.daily_newsletter = insight.daily_newsletter
+        else:
+            session.add(insight)
+            
+        session.commit()
+        
+        return DailyAiInsightOut(
+            date=insight.date,
+            market_narrative=insight.market_narrative or "",
+            sector_insight=insight.sector_insight or "",
+            stock_reviews=insight.stock_reviews or "[]",
+            daily_newsletter=insight.daily_newsletter or ""
+        )
+        
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

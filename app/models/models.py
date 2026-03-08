@@ -98,3 +98,13 @@ class Portfolio(Base):
     symbol = Column(String, index=True)
     quantity = Column(Float)
     avg_price = Column(Float)
+
+
+class DailyAiInsight(Base):
+    __tablename__ = 'daily_ai_insights'
+    id = Column(Integer, primary_key=True)
+    date = Column(Date, index=True, unique=True)
+    market_narrative = Column(String)
+    sector_insight = Column(String)
+    stock_reviews = Column(String)  # JSON string
+    daily_newsletter = Column(String)

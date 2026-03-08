@@ -16,4 +16,6 @@ gunicorn==22.0.0
 sqlalchemy
 aiosqlite
 python-dotenv
-
+openai
+feedparser
+requests
