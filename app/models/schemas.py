@@ -111,3 +111,20 @@ class MarketSeriesPoint(BaseModel):
 class MarketSeriesOut(BaseModel):
     symbol: str
     series: List[MarketSeriesPoint]
+
+
+class CompanyOut(BaseModel):
+    ticker: str
+    company_name: str
+    company_short_name: str
+    industry: str
+
+
+class OHLCVOut(BaseModel):
+    date: dt_date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    symbol: str

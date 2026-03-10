@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.models.db import init_db
 from app.api.routes import router
+from app.api.stock_info import router as stock_info_router
+from app.api.chat import router as chat_router
 from app.utils.logging import setup_logging
 from app.scheduler.scheduler import start_scheduler
 import logging
@@ -27,6 +29,8 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(stock_info_router, prefix="/api/stocks", tags=["stocks"])
+app.include_router(chat_router, prefix="/api/chat", tags=["Chat"])
 
 scheduler = None
 
