@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Dict, Any
 from openai import OpenAI
 from app.utils.config import settings
@@ -45,7 +46,35 @@ def call_vertex_key_ai(system_prompt: str, data_payload: dict, model_override: s
         
         content = response.choices[0].message.content
         logger.info(f"AI API Response: {content}")
-        return json.loads(content)
+        
+        # Cố gắng parse JSON, nếu lỗi thì cắt ngắn response
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as json_err:
+            logger.warning(f"JSON parsing error: {json_err}. Attempting to fix truncated response...")
+            
+            # Cắt ngắn response và cố gắng parse lại
+            # Tìm ký tự `}` cuối cùng để khép lại object
+            last_brace = content.rfind('}')
+            if last_brace > 0:
+                truncated = content[:last_brace + 1]
+                try:
+                    logger.info(f"Retrying with truncated JSON (length: {len(truncated)})")
+                    return json.loads(truncated)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Nếu vẫn lỗi, thử lấy object đầu tiên
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+            
+            # Nếu tất cả đều thất bại, trả về lỗi
+            logger.error(f"Failed to parse JSON response after multiple attempts")
+            return {"error": f"Invalid JSON response from AI API: {json_err}"}
 
     except Exception as e:
         logger.error(f"Error calling AI API: {e}", exc_info=True)
